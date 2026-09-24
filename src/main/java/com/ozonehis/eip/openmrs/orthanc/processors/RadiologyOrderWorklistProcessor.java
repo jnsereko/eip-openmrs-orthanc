@@ -191,18 +191,22 @@ public class RadiologyOrderWorklistProcessor implements Processor {
     /**
      * True only if THIS ServiceRequest has an accepted payment Task.
      *
-     * <p>The basedOn link is checked here, in Java, and not left to the server. OpenMRS's FHIR2
-     * module accepts {@code ?based-on=} and then ignores it: querying with an all-zero uuid returns
-     * every Task in the system. Trusting the server to filter meant that a single accepted Task -
+     * <p>The search uses the typed form {@code ?based-on=ServiceRequest/<uuid>}. OpenMRS's FHIR2
+     * module silently ignores the bare-uuid form {@code ?based-on=<uuid>} and returns every Task in
+     * the system: measured on UAT, each such call took 0.46-0.54 s and returned all 22 Tasks, and
+     * this poll repeats it for every active imaging order of the last seven days, so the bridges
+     * held OpenMRS at a full core while idle. The typed form is honoured and returns only the
+     * matching Task in 0.03-0.05 s.
+     *
+     * <p>The basedOn link is still checked here, in Java, and not left to the server. While the
+     * search was ignored, trusting the server to filter meant that a single accepted Task -
      * anywhere, for any patient - authorised every radiology order. Measured on UAT: one accepted
      * Task produced 18 worklist entries for orders that had never been paid, across two patients.
-     * That is a total bypass of the payment gate, not a narrow edge case.
-     *
-     * <p>The query parameter is left in place: it is harmless, and becomes a real optimisation the
-     * day OpenMRS implements it. The filtering below is what actually guarantees correctness.
+     * That is a total bypass of the payment gate, so the filtering below stays whatever the server
+     * does with the parameter.
      */
     private boolean isPaymentConfirmedViaTask(String serviceRequestId) {
-        JsonNode bundle = fetchFhir(openmrsBaseUrl + "/ws/fhir2/R4/Task?based-on=" + serviceRequestId);
+        JsonNode bundle = fetchFhir(openmrsBaseUrl + "/ws/fhir2/R4/Task?based-on=ServiceRequest/" + serviceRequestId);
         if (bundle == null) {
             return false;
         }
