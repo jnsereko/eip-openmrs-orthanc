@@ -9,6 +9,7 @@ package com.ozonehis.eip.openmrs.orthanc.processors;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ozonehis.eip.openmrs.orthanc.RadiologyConcepts;
 import com.ozonehis.eip.openmrs.orthanc.handlers.orthanc.OrthancWorklistHandler;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.OkHttpClient;
@@ -25,8 +26,6 @@ import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
-import java.util.HashSet;
-import java.util.Set;
 
 @Slf4j
 @Component
@@ -44,24 +43,10 @@ public class RadiologyOrderWorklistProcessor implements Processor {
     @Value("${openmrs.password:Admin123}")
     private String openmrsPassword;
 
-    // Radiology concept UUIDs - whitelist for worklist creation
-    private static final Set<String> RADIOLOGY_CONCEPT_UUIDS = new HashSet<>(java.util.Arrays.asList(
-        "e3dea2c8-62c6-4487-bdaa-1d009642f7ad", // RX01 - Chest X-ray
-        "82e7d36c-078d-40c6-9854-92b376099307", // RX02 - Abdominal X-ray
-        "701257a2-885e-4249-8319-d9597d2970af", // RX03 - Bone X-ray
-        "b25dcc00-800f-48ac-b31a-f1e9cc53d787", // RX04 - Intravenous urography
-        "81e0643c-a871-475e-8bd5-93945da8877d", // RX05 - Salpingo-urethrogram
-        "1a5e3d73-f897-47ed-840b-d4537b7cc586", // RX06 - Barium enema
-        "0a5ba175-fb7e-4d66-aa6a-ba058f3468c1", // RX07 - CT scan
-        "d0b5d4a0-1001-0000-0000-000000000001", // Chest X-Ray
-        "d0b5d4a0-1002-0000-0000-000000000001", // Abdominal X-Ray
-        "d0b5d4a0-1003-0000-0000-000000000001", // Hand X-Ray
-        "d0b5d4a0-1004-0000-0000-000000000001", // Foot X-Ray
-        "d0b5d4a0-1005-0000-0000-000000000001", // Knee X-Ray
-        "d0b5d4a0-1006-0000-0000-000000000001", // Spine X-Ray
-        "d0b5d4a0-1007-0000-0000-000000000001", // Pelvis X-Ray
-        "d0b5d4a0-1008-0000-0000-000000000001"  // Skull X-Ray
-    ));
+    // Radiology concept UUIDs - whitelist for worklist creation. Configurable through
+    // RADIOLOGY_CONCEPT_UUIDS, shared with eip-odoo-openmrs; see RadiologyConcepts for the default.
+    @Autowired
+    private RadiologyConcepts radiologyConcepts;
 
     private final OkHttpClient httpClient = new OkHttpClient();
     private final ObjectMapper mapper = new ObjectMapper();
@@ -132,7 +117,7 @@ public class RadiologyOrderWorklistProcessor implements Processor {
                 for (JsonNode coding : sr.path("code").path("coding")) {
                     String conceptCode = coding.path("code").asText("");
                     log.debug("SR {} concept code: {}", srId.substring(0,8), conceptCode);
-                    if (RADIOLOGY_CONCEPT_UUIDS.contains(conceptCode)) {
+                    if (radiologyConcepts.contains(conceptCode)) {
                         isRadiology = true;
                         break;
                     }
