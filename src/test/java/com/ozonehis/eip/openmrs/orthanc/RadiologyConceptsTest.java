@@ -19,16 +19,25 @@ import org.junit.jupiter.api.Test;
 import org.springframework.core.env.StandardEnvironment;
 import org.springframework.core.env.SystemEnvironmentPropertySource;
 
-/** The radiology concept list is configurable, and never silently empty (UVL-EMR#253). */
+/**
+ * The radiology concept list is configurable and never silently empty (UVL-EMR#253), and the
+ * modality comes from the concept (UVL-EMR#304).
+ */
 class RadiologyConceptsTest {
 
     private static final String RX01 = "e3dea2c8-62c6-4487-bdaa-1d009642f7ad";
 
     private static final String RX02 = "82e7d36c-078d-40c6-9854-92b376099307";
 
+    private static final String RX07 = "0a5ba175-fb7e-4d66-aa6a-ba058f3468c1";
+
+    private static final String EC01 = "8155e2e0-5b62-42bc-b47c-0702aaafe3df";
+
+    private static final String EC02 = "521361cf-ce7d-49a6-9721-8ebad1b76702";
+
     private static final String OTHER = "11111111-2222-3333-4444-555555555555";
 
-    /** The list both bridges hard-coded before #253. Changing it is #304, not a refactor. */
+    /** The list both bridges hard-coded before #253. */
     private static final Set<String> HARD_CODED_BEFORE_253 = new LinkedHashSet<>(Arrays.asList(
             "e3dea2c8-62c6-4487-bdaa-1d009642f7ad",
             "82e7d36c-078d-40c6-9854-92b376099307",
@@ -46,12 +55,61 @@ class RadiologyConceptsTest {
             "d0b5d4a0-1007-0000-0000-000000000001",
             "d0b5d4a0-1008-0000-0000-000000000001"));
 
+    /** The default since #304: the list before #253 plus the EC01/EC02 ultrasound concepts. */
+    private static final Set<String> DEFAULT_SINCE_304 = new LinkedHashSet<>(HARD_CODED_BEFORE_253);
+
+    static {
+        DEFAULT_SINCE_304.add(EC01);
+        DEFAULT_SINCE_304.add(EC02);
+    }
+
     @Test
-    void defaultIsExactlyTheFifteenConceptsHardCodedBefore() {
-        assertEquals(15, RadiologyConcepts.DEFAULT_UUIDS.size());
-        assertEquals(HARD_CODED_BEFORE_253, RadiologyConcepts.DEFAULT_UUIDS);
-        assertEquals(HARD_CODED_BEFORE_253, new RadiologyConcepts().getUuids());
-        assertEquals(HARD_CODED_BEFORE_253, new RadiologyConcepts(null).getUuids());
+    void defaultIsTheFifteenConceptsHardCodedBeforePlusTheTwoUltrasounds() {
+        assertEquals(17, RadiologyConcepts.DEFAULT_UUIDS.size());
+        assertEquals(DEFAULT_SINCE_304, RadiologyConcepts.DEFAULT_UUIDS);
+        assertEquals(DEFAULT_SINCE_304, new RadiologyConcepts().getUuids());
+        assertEquals(DEFAULT_SINCE_304, new RadiologyConcepts(null).getUuids());
+    }
+
+    @Test
+    void ultrasoundConceptsAreRadiologyByDefault() {
+        RadiologyConcepts concepts = new RadiologyConcepts();
+
+        assertTrue(concepts.contains(EC01));
+        assertTrue(concepts.contains(EC02));
+    }
+
+    @Test
+    void everyDefaultConceptHasAModality() {
+        assertEquals(RadiologyConcepts.DEFAULT_UUIDS, RadiologyConcepts.MODALITY_BY_CONCEPT.keySet());
+    }
+
+    @Test
+    void modalityComesFromTheConceptNotTheName() {
+        // Names chosen so the old heuristic would have got each one wrong.
+        assertEquals("US", RadiologyConcepts.modalityFor(EC01, "EC01 - Abdominal"));
+        assertEquals("US", RadiologyConcepts.modalityFor(EC02, "Gastrointestinal"));
+        assertEquals("CT", RadiologyConcepts.modalityFor(RX07, "RX07 - Head"));
+        assertEquals("XR", RadiologyConcepts.modalityFor(RX01, "RX01 - Chest X-ray"));
+        assertEquals("XR", RadiologyConcepts.modalityFor(RX01, "Chest scan"));
+        assertEquals("XR", RadiologyConcepts.modalityFor("d0b5d4a0-1006-0000-0000-000000000001", "Spine"));
+    }
+
+    @Test
+    void anUnmappedConfiguredConceptFallsBackToTheNameHeuristic() {
+        assertEquals("CT", RadiologyConcepts.modalityFor(OTHER, "CT Scan Head"));
+        assertEquals("US", RadiologyConcepts.modalityFor(OTHER, "Pelvic ultrasound"));
+        assertEquals("MR", RadiologyConcepts.modalityFor(OTHER, "MRI brain"));
+        assertEquals("XR", RadiologyConcepts.modalityFor(OTHER, "Chest X-ray"));
+        assertEquals("XR", RadiologyConcepts.modalityFor(OTHER, null));
+        assertEquals("XR", RadiologyConcepts.modalityFor(null, null));
+    }
+
+    @Test
+    void theNameHeuristicIgnoresAccents() {
+        assertEquals("US", RadiologyConcepts.modalityFor(OTHER, "Échographie abdominale"));
+        assertEquals("US", RadiologyConcepts.modalityFor(OTHER, "ÉCHOGRAPHIE PELVIENNE"));
+        assertEquals("US", RadiologyConcepts.modalityFor(OTHER, "Echocardiographie"));
     }
 
     @Test
@@ -69,7 +127,7 @@ class RadiologyConceptsTest {
     void blankConfigurationFallsBackToTheDefault() {
         for (String blank : new String[] {"", "   ", ",", " , ,"}) {
             RadiologyConcepts concepts = new RadiologyConcepts(blank);
-            assertEquals(HARD_CODED_BEFORE_253, concepts.getUuids(), "for '" + blank + "'");
+            assertEquals(DEFAULT_SINCE_304, concepts.getUuids(), "for '" + blank + "'");
             assertTrue(concepts.contains(RX01));
         }
     }
@@ -79,7 +137,7 @@ class RadiologyConceptsTest {
         // One typo must not leave a partial list: that would drop the mistyped concept in silence.
         RadiologyConcepts concepts = new RadiologyConcepts(RX02 + ",RX01," + OTHER);
 
-        assertEquals(HARD_CODED_BEFORE_253, concepts.getUuids());
+        assertEquals(DEFAULT_SINCE_304, concepts.getUuids());
         assertTrue(concepts.contains(RX01));
         assertFalse(concepts.contains(OTHER));
     }

@@ -112,17 +112,17 @@ public class RadiologyOrderWorklistProcessor implements Processor {
                 String status = sr.path("status").asText("");
                 if (!"active".equals(status)) { log.debug("Skipping non-active SR {} status={}", srId, status); continue; }
 
-                // Filter by concept UUID whitelist
-                boolean isRadiology = false;
+                // Filter by concept UUID whitelist, keeping the matched concept for the modality
+                String radiologyConcept = null;
                 for (JsonNode coding : sr.path("code").path("coding")) {
                     String conceptCode = coding.path("code").asText("");
                     log.debug("SR {} concept code: {}", srId.substring(0,8), conceptCode);
                     if (radiologyConcepts.contains(conceptCode)) {
-                        isRadiology = true;
+                        radiologyConcept = conceptCode;
                         break;
                     }
                 }
-                if (!isRadiology) {
+                if (radiologyConcept == null) {
                     log.info("Skipping non-radiology SR {}", srId.substring(0,8));
                     continue;
                 }
@@ -151,12 +151,8 @@ public class RadiologyOrderWorklistProcessor implements Processor {
                 String procedureDesc = sr.path("code").path("text").asText("Radiology");
                 String accessionNumber = srId.replace("-", "").substring(0, 12).toUpperCase();
 
-                // Modality
-                String modality = "XR";
-                String desc = procedureDesc.toLowerCase();
-                if (desc.contains("ct") || desc.contains("scan")) modality = "CT";
-                else if (desc.contains("ultrasound") || desc.contains("echo")) modality = "US";
-                else if (desc.contains("mri") || desc.contains("mr ")) modality = "MR";
+                // Modality from the concept; the name is only a fallback for an unmapped concept
+                String modality = RadiologyConcepts.modalityFor(radiologyConcept, procedureDesc);
 
                 // Check for a payment-confirmation Task (created by eip-odoo-openmrs's
                 // RadiologyPaymentTaskProcessor once Odoo payment is confirmed) - only

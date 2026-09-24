@@ -7,34 +7,36 @@
  */
 package com.ozonehis.eip.openmrs.orthanc;
 
+import java.text.Normalizer;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Which order concepts get a modality worklist entry.
+ * Which order concepts get a modality worklist entry, and which DICOM modality each one is.
  *
  * <p>The list is read from the {@value #PROPERTY} property - set it as the environment variable
  * {@code RADIOLOGY_CONCEPT_UUIDS}, a comma-separated list of concept uuids (UVL-EMR#253). The
  * eip-odoo-openmrs bridge reads the same variable for payment gating, so setting it once for both
  * containers keeps the two on the same list: an order this bridge schedules is one the other bridge
- * can mark paid. With no value it is {@link #DEFAULT_UUIDS}, the list both bridges hard-coded
- * before, so an unconfigured deployment behaves exactly as it did.
+ * can mark paid. With no value it is {@link #DEFAULT_UUIDS}: the X-ray and CT concepts plus the
+ * EC01/EC02 ultrasound concepts (UVL-EMR#304). eip-odoo-openmrs carries the same default.
  *
  * <p>A configured value that is blank or contains anything that is not a uuid is rejected as a
  * whole, with a WARN, and the default is used instead. It never becomes an empty or partial list:
  * an empty list would skip every radiology order at INFO level and no scan would ever reach a
  * modality.
  *
- * <p>This is not #304. The modality is still guessed from the procedure name in
- * {@code RadiologyOrderWorklistProcessor}, and ultrasound/echocardiography concepts are not in the
- * default list. The imaging-gate frontend ({@code @jnsereko/esm-imaging-gate-app},
- * {@code config-schema.ts}) carries its own copy of the default list and must be kept in step.
+ * <p>The modality comes from the concept ({@link #modalityFor}), not from the procedure name. The
+ * name heuristic that used to decide it is kept only for a configured concept this class has no
+ * mapping for.
  */
 @Slf4j
 public class RadiologyConcepts {
@@ -45,23 +47,35 @@ public class RadiologyConcepts {
     private static final Pattern UUID =
             Pattern.compile("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
 
-    public static final Set<String> DEFAULT_UUIDS = Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
-            "e3dea2c8-62c6-4487-bdaa-1d009642f7ad", // RX01 - Chest X-ray
-            "82e7d36c-078d-40c6-9854-92b376099307", // RX02 - Abdominal X-ray
-            "701257a2-885e-4249-8319-d9597d2970af", // RX03 - Bone X-ray
-            "b25dcc00-800f-48ac-b31a-f1e9cc53d787", // RX04 - Intravenous urography
-            "81e0643c-a871-475e-8bd5-93945da8877d", // RX05 - Salpingo-urethrogram
-            "1a5e3d73-f897-47ed-840b-d4537b7cc586", // RX06 - Barium enema
-            "0a5ba175-fb7e-4d66-aa6a-ba058f3468c1", // RX07 - CT scan
-            "d0b5d4a0-1001-0000-0000-000000000001", // Chest X-Ray
-            "d0b5d4a0-1002-0000-0000-000000000001", // Abdominal X-Ray
-            "d0b5d4a0-1003-0000-0000-000000000001", // Hand X-Ray
-            "d0b5d4a0-1004-0000-0000-000000000001", // Foot X-Ray
-            "d0b5d4a0-1005-0000-0000-000000000001", // Knee X-Ray
-            "d0b5d4a0-1006-0000-0000-000000000001", // Spine X-Ray
-            "d0b5d4a0-1007-0000-0000-000000000001", // Pelvis X-Ray
-            "d0b5d4a0-1008-0000-0000-000000000001" // Skull X-Ray
-            )));
+    private static final Pattern DIACRITICS = Pattern.compile("\\p{M}+");
+
+    /** DICOM modality (0008,0060) of each known radiology concept. Its keys are the default list. */
+    public static final Map<String, String> MODALITY_BY_CONCEPT;
+
+    static {
+        Map<String, String> modalities = new LinkedHashMap<>();
+        modalities.put("e3dea2c8-62c6-4487-bdaa-1d009642f7ad", "XR"); // RX01 - Chest X-ray
+        modalities.put("82e7d36c-078d-40c6-9854-92b376099307", "XR"); // RX02 - Abdominal X-ray
+        modalities.put("701257a2-885e-4249-8319-d9597d2970af", "XR"); // RX03 - Bone X-ray
+        modalities.put("b25dcc00-800f-48ac-b31a-f1e9cc53d787", "XR"); // RX04 - Intravenous urography
+        modalities.put("81e0643c-a871-475e-8bd5-93945da8877d", "XR"); // RX05 - Salpingo-urethrogram
+        modalities.put("1a5e3d73-f897-47ed-840b-d4537b7cc586", "XR"); // RX06 - Barium enema
+        modalities.put("0a5ba175-fb7e-4d66-aa6a-ba058f3468c1", "CT"); // RX07 - CT scan
+        modalities.put("d0b5d4a0-1001-0000-0000-000000000001", "XR"); // Chest X-Ray
+        modalities.put("d0b5d4a0-1002-0000-0000-000000000001", "XR"); // Abdominal X-Ray
+        modalities.put("d0b5d4a0-1003-0000-0000-000000000001", "XR"); // Hand X-Ray
+        modalities.put("d0b5d4a0-1004-0000-0000-000000000001", "XR"); // Foot X-Ray
+        modalities.put("d0b5d4a0-1005-0000-0000-000000000001", "XR"); // Knee X-Ray
+        modalities.put("d0b5d4a0-1006-0000-0000-000000000001", "XR"); // Spine X-Ray
+        modalities.put("d0b5d4a0-1007-0000-0000-000000000001", "XR"); // Pelvis X-Ray
+        modalities.put("d0b5d4a0-1008-0000-0000-000000000001", "XR"); // Skull X-Ray
+        modalities.put("8155e2e0-5b62-42bc-b47c-0702aaafe3df", "US"); // EC01 - Abdominal ultrasound
+        modalities.put("521361cf-ce7d-49a6-9721-8ebad1b76702", "US"); // EC02 - Gastrointestinal ultrasound
+        MODALITY_BY_CONCEPT = Collections.unmodifiableMap(modalities);
+    }
+
+    public static final Set<String> DEFAULT_UUIDS =
+            Collections.unmodifiableSet(new LinkedHashSet<>(MODALITY_BY_CONCEPT.keySet()));
 
     private final Set<String> uuids;
 
@@ -84,6 +98,39 @@ public class RadiologyConcepts {
     /** Whether an order coded with this concept uuid is a radiology order. */
     public boolean contains(String conceptUuid) {
         return conceptUuid != null && uuids.contains(conceptUuid);
+    }
+
+    /**
+     * The DICOM modality for an order coded with this concept.
+     *
+     * <p>A known concept maps to its modality regardless of the procedure name. Only a concept with
+     * no mapping - one added through {@value #PROPERTY} - falls back to guessing from the name, and
+     * that guess ignores case and accents, so "Échographie abdominale" is US. XR when nothing
+     * matches.
+     */
+    public static String modalityFor(String conceptUuid, String procedureName) {
+        String mapped = conceptUuid == null ? null : MODALITY_BY_CONCEPT.get(conceptUuid);
+        if (mapped != null) {
+            return mapped;
+        }
+        String modality = modalityFromName(procedureName);
+        log.debug("No modality mapped for concept {} - '{}' guessed from the name", conceptUuid, modality);
+        return modality;
+    }
+
+    /** The name heuristic that decided every modality before UVL-EMR#304, made accent-insensitive. */
+    static String modalityFromName(String procedureName) {
+        if (procedureName == null) {
+            return "XR";
+        }
+        String desc = DIACRITICS
+                .matcher(Normalizer.normalize(procedureName, Normalizer.Form.NFD))
+                .replaceAll("")
+                .toLowerCase(Locale.ROOT);
+        if (desc.contains("ct") || desc.contains("scan")) return "CT";
+        if (desc.contains("ultrasound") || desc.contains("echo")) return "US";
+        if (desc.contains("mri") || desc.contains("mr ")) return "MR";
+        return "XR";
     }
 
     private static Set<String> resolve(String configured) {

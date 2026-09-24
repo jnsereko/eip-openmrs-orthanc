@@ -35,6 +35,8 @@ class RadiologyOrderWorklistProcessorTest {
 
     private static final String RX01 = "e3dea2c8-62c6-4487-bdaa-1d009642f7ad";
 
+    private static final String EC01 = "8155e2e0-5b62-42bc-b47c-0702aaafe3df";
+
     private static final String SERVICE_REQUEST_ID = "5f0c9b52-2c8e-4a39-9d2f-8a1b3c4d5e6f";
 
     private static final String OTHER_SERVICE_REQUEST_ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
@@ -47,6 +49,10 @@ class RadiologyOrderWorklistProcessorTest {
 
     private String taskBundle;
 
+    private String srConcept = RX01;
+
+    private String srText = "Chest X-ray";
+
     private OrthancWorklistHandler orthancWorklistHandler;
 
     private RadiologyOrderWorklistProcessor processor;
@@ -54,7 +60,7 @@ class RadiologyOrderWorklistProcessorTest {
     @BeforeEach
     void setup() throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/openmrs/ws/fhir2/R4/ServiceRequest", exchange -> respond(exchange, serviceRequestBundle()));
+        server.createContext("/openmrs/ws/fhir2/R4/ServiceRequest", exchange -> respond(exchange, serviceRequestBundle(srConcept, srText)));
         server.createContext("/openmrs/ws/fhir2/R4/Patient/", exchange -> respond(exchange, patient()));
         server.createContext("/openmrs/ws/fhir2/R4/Task", exchange -> {
             taskQueries.add(exchange.getRequestURI().getRawQuery());
@@ -100,6 +106,19 @@ class RadiologyOrderWorklistProcessorTest {
                 .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), anyString());
     }
 
+    @Test
+    void shouldScheduleAnUltrasoundOrderWithModalityUs() throws Exception {
+        // UVL-EMR#304: EC01 was not a radiology concept, and its name has no "ultrasound" in French.
+        srConcept = EC01;
+        srText = "Échographie abdominale";
+        taskBundle = bundleOf(acceptedTask("t-mine", SERVICE_REQUEST_ID));
+
+        processor.process(null);
+
+        verify(orthancWorklistHandler)
+                .createWorklistEntry(anyString(), anyString(), anyString(), eq("Échographie abdominale"), eq("US"));
+    }
+
     private static void respond(com.sun.net.httpserver.HttpExchange exchange, String json)
             throws java.io.IOException {
         byte[] body = json.getBytes(StandardCharsets.UTF_8);
@@ -109,11 +128,11 @@ class RadiologyOrderWorklistProcessorTest {
         exchange.close();
     }
 
-    private static String serviceRequestBundle() {
+    private static String serviceRequestBundle(String concept, String text) {
         return "{\"resourceType\":\"Bundle\",\"type\":\"searchset\",\"entry\":[{\"resource\":{"
                 + "\"resourceType\":\"ServiceRequest\",\"id\":\"" + SERVICE_REQUEST_ID + "\","
                 + "\"status\":\"active\",\"authoredOn\":\"2026-09-24T08:00:00+00:00\","
-                + "\"code\":{\"text\":\"Chest X-ray\",\"coding\":[{\"code\":\"" + RX01 + "\"}]},"
+                + "\"code\":{\"text\":\"" + text + "\",\"coding\":[{\"code\":\"" + concept + "\"}]},"
                 + "\"subject\":{\"reference\":\"Patient/" + PATIENT_ID + "\"}}}]}";
     }
 
