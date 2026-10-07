@@ -7,7 +7,11 @@
  */
 package com.ozonehis.eip.openmrs.orthanc.config;
 
+import ca.uhn.fhir.rest.client.api.IGenericClient;
+import com.ozonehis.eip.openmrs.orthanc.FhirConceptSetMembers;
 import com.ozonehis.eip.openmrs.orthanc.RadiologyConcepts;
+import java.time.Clock;
+import java.time.Duration;
 import org.openmrs.eip.app.config.AppConfig;
 import org.openmrs.eip.fhir.spring.OpenmrsFhirAppConfig;
 import org.springframework.beans.factory.annotation.Value;
@@ -23,14 +27,26 @@ import org.springframework.context.annotation.Import;
 public class EIPAppConfig {
 
     /**
-     * The radiology concept list, from RADIOLOGY_CONCEPT_UUIDS, and the modality X-rays are scheduled
-     * with, from ORTHANC_WORKLIST_XRAY_MODALITY (see {@link RadiologyConcepts}). The empty defaults
-     * mean "unset", which RadiologyConcepts turns into its built-in list and DX.
+     * The radiology concept list (see {@link RadiologyConcepts}): the members of the concept set
+     * RADIOLOGY_CONCEPT_SET_UUID when it is set, read from OpenMRS FHIR and cached, otherwise
+     * RADIOLOGY_CONCEPT_UUIDS; with neither, the built-in list. X-rays are scheduled with the modality
+     * ORTHANC_WORKLIST_XRAY_MODALITY, DX when unset. Empty defaults mean "unset".
      */
     @Bean
     public RadiologyConcepts radiologyConcepts(
             @Value("${" + RadiologyConcepts.PROPERTY + ":}") String configured,
-            @Value("${" + RadiologyConcepts.XRAY_MODALITY_PROPERTY + ":}") String xrayModality) {
-        return new RadiologyConcepts(configured, xrayModality);
+            @Value("${" + RadiologyConcepts.XRAY_MODALITY_PROPERTY + ":}") String xrayModality,
+            @Value("${" + RadiologyConcepts.SET_PROPERTY + ":}") String conceptSetUuid,
+            @Value("${" + RadiologyConcepts.CACHE_SECONDS_PROPERTY + ":" + RadiologyConcepts.DEFAULT_CACHE_SECONDS
+                            + "}")
+                    long cacheSeconds,
+            IGenericClient openmrsFhirClient) {
+        return new RadiologyConcepts(
+                configured,
+                xrayModality,
+                conceptSetUuid,
+                new FhirConceptSetMembers(openmrsFhirClient),
+                Duration.ofSeconds(cacheSeconds),
+                Clock.systemUTC());
     }
 }
