@@ -37,12 +37,35 @@ import lombok.extern.slf4j.Slf4j;
  * <p>The modality comes from the concept ({@link #modalityFor}), not from the procedure name. The
  * name heuristic that used to decide it is kept only for a configured concept this class has no
  * mapping for.
+ *
+ * <p>What an X-ray is called on the worklist is configurable ({@value #XRAY_MODALITY_PROPERTY},
+ * environment variable {@code ORTHANC_WORKLIST_XRAY_MODALITY}, default {@value
+ * #DEFAULT_XRAY_MODALITY}) - see {@link #modalityOf} and UVL-EMR#424.
  */
 @Slf4j
 public class RadiologyConcepts {
 
     /** Property the list is read from. Spring maps the environment variable RADIOLOGY_CONCEPT_UUIDS onto it. */
     public static final String PROPERTY = "radiology.concept.uuids";
+
+    /**
+     * Property the worklist modality of an X-ray is read from. Spring maps the environment variable
+     * ORTHANC_WORKLIST_XRAY_MODALITY onto it.
+     */
+    public static final String XRAY_MODALITY_PROPERTY = "orthanc.worklist.xray.modality";
+
+    /**
+     * DX (digital radiography), what the UVL X-ray unit - xmaru - writes as the Modality of its
+     * own studies. XR is not a DICOM defined term for (0008,0060) at all; a modality that filters
+     * its worklist query on its own modality, as DX, would never match an entry labelled XR.
+     */
+    public static final String DEFAULT_XRAY_MODALITY = "DX";
+
+    /** The generic X-ray modality {@link #MODALITY_BY_CONCEPT} and the name heuristic return. */
+    static final String XR = "XR";
+
+    /** A DICOM Code String: at most 16 upper-case letters, digits, underscores or spaces. */
+    private static final Pattern CODE_STRING = Pattern.compile("^[A-Z0-9_ ]{1,16}$");
 
     private static final Pattern UUID =
             Pattern.compile("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
@@ -79,7 +102,9 @@ public class RadiologyConcepts {
 
     private final Set<String> uuids;
 
-    /** The default list, as before this was configurable. */
+    private final String xrayModality;
+
+    /** The default list, as before this was configurable, and the default X-ray modality. */
     public RadiologyConcepts() {
         this(null);
     }
@@ -88,7 +113,22 @@ public class RadiologyConcepts {
      * @param configured the raw {@value #PROPERTY} value; null or blank means "use the default"
      */
     public RadiologyConcepts(String configured) {
+        this(configured, null);
+    }
+
+    /**
+     * @param configured the raw {@value #PROPERTY} value; null or blank means "use the default"
+     * @param xrayModality the raw {@value #XRAY_MODALITY_PROPERTY} value; null or blank means
+     *     {@value #DEFAULT_XRAY_MODALITY}
+     */
+    public RadiologyConcepts(String configured, String xrayModality) {
         this.uuids = resolve(configured);
+        this.xrayModality = resolveXrayModality(xrayModality);
+    }
+
+    /** The modality an X-ray order is scheduled with. */
+    public String getXrayModality() {
+        return xrayModality;
     }
 
     public Set<String> getUuids() {
@@ -118,6 +158,24 @@ public class RadiologyConcepts {
         return modality;
     }
 
+    /**
+     * The modality to put on the worklist entry: {@link #modalityFor}, with an X-ray written as the
+     * configured {@link #getXrayModality() X-ray modality} instead of XR (UVL-EMR#424).
+     *
+     * <p>The worklist is read by the X-ray unit, and an entry has to carry the modality that unit
+     * calls itself. xmaru encodes its X-rays as DX, so an entry labelled XR is skipped by any
+     * worklist query it filters on its own modality - the order is on the worklist and still never
+     * reaches the machine. US and CT are left as they are: they are already the defined terms
+     * those modalities use.
+     *
+     * <p>Every route to XR is replaced, the mapped X-ray concepts and the name heuristic's
+     * fallback alike, so a configured concept with no mapping is scheduled the same way.
+     */
+    public String modalityOf(String conceptUuid, String procedureName) {
+        String modality = modalityFor(conceptUuid, procedureName);
+        return XR.equals(modality) ? xrayModality : modality;
+    }
+
     /** The name heuristic that decided every modality before UVL-EMR#304, made accent-insensitive. */
     static String modalityFromName(String procedureName) {
         if (procedureName == null) {
@@ -131,6 +189,26 @@ public class RadiologyConcepts {
         if (desc.contains("ultrasound") || desc.contains("echo")) return "US";
         if (desc.contains("mri") || desc.contains("mr ")) return "MR";
         return "XR";
+    }
+
+    /**
+     * The configured X-ray modality, upper-cased, or the default if it is unset or not a DICOM Code
+     * String. A bad value is rejected with a WARN rather than written to the worklist: Orthanc would
+     * accept it, and the entry would then match no modality's query, in silence.
+     */
+    private static String resolveXrayModality(String configured) {
+        if (configured == null || configured.trim().isEmpty()) {
+            log.info("{} not set - X-rays are scheduled as {}", XRAY_MODALITY_PROPERTY, DEFAULT_XRAY_MODALITY);
+            return DEFAULT_XRAY_MODALITY;
+        }
+        String modality = configured.trim().toUpperCase(Locale.ROOT);
+        if (!CODE_STRING.matcher(modality).matches()) {
+            log.warn("{} is not a DICOM modality code ('{}') - IGNORING it, X-rays are scheduled as {}",
+                    XRAY_MODALITY_PROPERTY, configured, DEFAULT_XRAY_MODALITY);
+            return DEFAULT_XRAY_MODALITY;
+        }
+        log.info("{} set - X-rays are scheduled as {}", XRAY_MODALITY_PROPERTY, modality);
+        return modality;
     }
 
     private static Set<String> resolve(String configured) {

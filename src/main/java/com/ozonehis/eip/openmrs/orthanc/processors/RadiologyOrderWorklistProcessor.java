@@ -25,7 +25,11 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 @Slf4j
 @Component
@@ -65,6 +69,20 @@ public class RadiologyOrderWorklistProcessor implements Processor {
      */
     private static final int LOOKBACK_DAYS = 7;
 
+    /** ServiceRequests asked for per FHIR page. */
+    static final int PAGE_SIZE = 100;
+
+    /**
+     * Ceiling on the pages one poll will follow - 5,000 ServiceRequests at {@link #PAGE_SIZE}.
+     *
+     * <p>Only a guard: UAT had 97 non-drug orders in the seven-day window on 12 Oct 2026, and the
+     * hospital's busiest week is well under 1,000. It exists so that a server that keeps answering
+     * with a {@code next} link - a paging bug, a cache that hands back the same page - costs one
+     * WARN and a bounded poll rather than a thread that never comes back, since the next poll is
+     * scheduled only after this one returns.
+     */
+    static final int MAX_PAGES = 50;
+
     @Autowired
     private com.ozonehis.eip.openmrs.orthanc.repository.ProcessedRadiologyOrderRepository processedRadiologyOrderRepository;
 
@@ -89,15 +107,21 @@ public class RadiologyOrderWorklistProcessor implements Processor {
             // _lastUpdated=gt is honoured, and the same query then returned 3 records including
             // the new one. It also keeps the page small: 830 records fetched every poll is the
             // reason this processor logged thousands of lines an hour.
+            //
+            // Every page is read, not just the first (UVL-EMR#424). The window narrowed the result
+            // but did not make it fit on one page: the oldest-first order still applies inside it,
+            // so once more than 100 lab and procedure orders were updated in the last seven days a
+            // new X-ray sat on page two, unseen, until older orders aged out of the window. On UAT
+            // two paid RX orders reached the worklist 12 and 16 hours after payment that way.
             String url = openmrsBaseUrl + "/ws/fhir2/R4/ServiceRequest"
-                + "?_lastUpdated=gt" + since + "&_count=100";
+                + "?_lastUpdated=gt" + since + "&_count=" + PAGE_SIZE;
 
-            JsonNode bundle = fetchFhir(url);
-            if (bundle == null) return;
+            List<JsonNode> entries = fetchAllPages(url);
+            if (entries == null) return;
 
-            log.debug("Found {} ServiceRequests updated since {}", bundle.path("entry").size(), since);
+            log.debug("Found {} ServiceRequests updated since {}", entries.size(), since);
             int count = 0;
-            for (JsonNode entry : bundle.path("entry")) {
+            for (JsonNode entry : entries) {
                 JsonNode sr = entry.path("resource");
                 String srId = sr.path("id").asText("");
                 String authored = sr.path("authoredOn").asText("");
@@ -152,7 +176,8 @@ public class RadiologyOrderWorklistProcessor implements Processor {
                 String accessionNumber = srId.replace("-", "").substring(0, 12).toUpperCase();
 
                 // Modality from the concept; the name is only a fallback for an unmapped concept
-                String modality = RadiologyConcepts.modalityFor(radiologyConcept, procedureDesc);
+                // (X-ray concepts get the configured X-ray modality, DX by default - UVL-EMR#424).
+                String modality = radiologyConcepts.modalityOf(radiologyConcept, procedureDesc);
 
                 // Check for a payment-confirmation Task (created by eip-odoo-openmrs's
                 // RadiologyPaymentTaskProcessor once Odoo payment is confirmed) - only
@@ -182,6 +207,91 @@ public class RadiologyOrderWorklistProcessor implements Processor {
         } catch (Exception e) {
             log.error("Error polling radiology orders: {}", e.getMessage());
         }
+    }
+
+    /**
+     * Every entry of a FHIR search, following the bundle's {@code link[relation=next]} to the end.
+     *
+     * <p>Returns null only when the FIRST page cannot be read, so the caller can tell "OpenMRS is
+     * unreachable" from "nothing changed". A later page that fails, a next link that repeats one
+     * already read, or more than {@link #MAX_PAGES} pages each stop the walk with a WARN and keep
+     * what was read: an order on an unread page is only delayed to a later poll, the same as
+     * before paging existed, whereas dropping the pages already read would delay all of them.
+     *
+     * <p>Each next link is rebased onto {@code openmrsBaseUrl} by {@link #rebaseOnOpenmrs}.
+     */
+    List<JsonNode> fetchAllPages(String firstPageUrl) {
+        JsonNode bundle = fetchFhir(firstPageUrl);
+        if (bundle == null) {
+            return null;
+        }
+        List<JsonNode> entries = new ArrayList<>();
+        Set<String> visited = new HashSet<>();
+        visited.add(firstPageUrl);
+        int pages = 1;
+        while (true) {
+            for (JsonNode entry : bundle.path("entry")) {
+                entries.add(entry);
+            }
+            String next = nextLink(bundle);
+            if (next == null) {
+                break;
+            }
+            String nextUrl = rebaseOnOpenmrs(next);
+            if (!visited.add(nextUrl)) {
+                log.warn("FHIR next link {} repeats a page already read - stopping after {} pages, {} entries",
+                    nextUrl, pages, entries.size());
+                break;
+            }
+            if (pages >= MAX_PAGES) {
+                log.warn("Stopped after {} FHIR pages ({} entries) with more still to read - "
+                    + "orders on the unread pages wait for a later poll", pages, entries.size());
+                break;
+            }
+            bundle = fetchFhir(nextUrl);
+            if (bundle == null) {
+                log.warn("Could not read FHIR page {} - using the {} entries read so far", pages + 1, entries.size());
+                break;
+            }
+            pages++;
+        }
+        if (pages > 1) {
+            log.debug("Read {} ServiceRequests over {} FHIR pages", entries.size(), pages);
+        }
+        return entries;
+    }
+
+    private static String nextLink(JsonNode bundle) {
+        for (JsonNode link : bundle.path("link")) {
+            if ("next".equals(link.path("relation").asText(""))) {
+                String url = link.path("url").asText("");
+                return url.isEmpty() ? null : url;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The next-page link, pointed at {@code openmrsBaseUrl} whatever host the server wrote into it.
+     *
+     * <p>HAPI builds the link from the server base it believes it has, not from the address this
+     * bridge used. With {@code fhir2.uriPrefix} unset (UAT, 12 Oct 2026) that is the request's own
+     * host, {@code http://openmrs:8080}, which is correct only by coincidence: set the prefix to the
+     * public https address, or put OpenMRS behind a proxy that rewrites the Host header, and the
+     * link leads out of the Docker network, through the gateway and its login redirect, and the
+     * second page fails. Only the path from {@code /ws/fhir2/R4} on, with its
+     * {@code ?_getpages=...} query, is kept; a relative link is resolved the same way.
+     */
+    String rebaseOnOpenmrs(String nextUrl) {
+        String fhirPath = "/ws/fhir2/R4";
+        int at = nextUrl.indexOf(fhirPath);
+        if (at >= 0) {
+            return openmrsBaseUrl + nextUrl.substring(at);
+        }
+        if (nextUrl.startsWith("?")) {
+            return openmrsBaseUrl + fhirPath + nextUrl;
+        }
+        return nextUrl;
     }
 
     /**

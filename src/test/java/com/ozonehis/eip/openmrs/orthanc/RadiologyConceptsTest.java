@@ -177,4 +177,57 @@ class RadiologyConceptsTest {
         assertEquals(RX02, resolved);
         assertEquals(Collections.singleton(RX02), new RadiologyConcepts(resolved).getUuids());
     }
+    @Test
+    void anXrayIsScheduledAsDxByDefault() {
+        // UVL-EMR#424: xmaru encodes its X-rays as DX; an entry labelled XR is skipped by its query.
+        RadiologyConcepts concepts = new RadiologyConcepts();
+
+        assertEquals("DX", concepts.getXrayModality());
+        assertEquals("DX", concepts.modalityOf(RX01, "RX01 - Chest X-ray"));
+        assertEquals("DX", concepts.modalityOf("d0b5d4a0-1006-0000-0000-000000000001", "Spine"));
+        // The name heuristic's X-ray fallback goes the same way.
+        assertEquals("DX", concepts.modalityOf(OTHER, "Chest X-ray"));
+        assertEquals("DX", concepts.modalityOf(null, null));
+    }
+
+    @Test
+    void ultrasoundAndCtAreNotAffectedByTheXrayModality() {
+        RadiologyConcepts concepts = new RadiologyConcepts(null, "CR");
+
+        assertEquals("US", concepts.modalityOf(EC01, "EC01 - Abdominal"));
+        assertEquals("US", concepts.modalityOf(EC02, "Gastrointestinal"));
+        assertEquals("CT", concepts.modalityOf(RX07, "RX07 - Head"));
+        assertEquals("MR", concepts.modalityOf(OTHER, "MRI brain"));
+        assertEquals("CR", concepts.modalityOf(RX01, "RX01 - Chest X-ray"));
+    }
+
+    @Test
+    void theXrayModalityIsConfigurableAndUpperCased() {
+        assertEquals("CR", new RadiologyConcepts(null, " cr ").getXrayModality());
+        assertEquals("XR", new RadiologyConcepts(null, "XR").getXrayModality());
+    }
+
+    @Test
+    void aBlankOrInvalidXrayModalityFallsBackToDx() {
+        for (String value : new String[] {null, "", "   ", "D-X", "DIGITAL RADIOGRAPHY X", "DX;CR"}) {
+            assertEquals("DX", new RadiologyConcepts(null, value).getXrayModality(), "for '" + value + "'");
+        }
+    }
+
+    @Test
+    void theEnvironmentVariableOrthancWorklistXrayModalityResolvesTheProperty() {
+        StandardEnvironment environment = new StandardEnvironment();
+        environment
+                .getPropertySources()
+                .replace(
+                        StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME,
+                        new SystemEnvironmentPropertySource(
+                                StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME,
+                                Collections.<String, Object>singletonMap("ORTHANC_WORKLIST_XRAY_MODALITY", "CR")));
+
+        String resolved = environment.resolvePlaceholders("${" + RadiologyConcepts.XRAY_MODALITY_PROPERTY + ":}");
+
+        assertEquals("CR", resolved);
+        assertEquals("CR", new RadiologyConcepts(null, resolved).getXrayModality());
+    }
 }

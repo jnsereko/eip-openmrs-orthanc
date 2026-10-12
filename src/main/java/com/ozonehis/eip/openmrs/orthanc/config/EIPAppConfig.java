@@ -23,11 +23,14 @@ import org.springframework.context.annotation.Import;
 public class EIPAppConfig {
 
     /**
-     * The radiology concept list, from RADIOLOGY_CONCEPT_UUIDS (see {@link RadiologyConcepts}). The
-     * empty default means "unset", which RadiologyConcepts turns into its built-in list.
+     * The radiology concept list, from RADIOLOGY_CONCEPT_UUIDS, and the modality X-rays are scheduled
+     * with, from ORTHANC_WORKLIST_XRAY_MODALITY (see {@link RadiologyConcepts}). The empty defaults
+     * mean "unset", which RadiologyConcepts turns into its built-in list and DX.
      */
     @Bean
-    public RadiologyConcepts radiologyConcepts(@Value("${" + RadiologyConcepts.PROPERTY + ":}") String configured) {
-        return new RadiologyConcepts(configured);
+    public RadiologyConcepts radiologyConcepts(
+            @Value("${" + RadiologyConcepts.PROPERTY + ":}") String configured,
+            @Value("${" + RadiologyConcepts.XRAY_MODALITY_PROPERTY + ":}") String xrayModality) {
+        return new RadiologyConcepts(configured, xrayModality);
     }
 }

@@ -19,6 +19,7 @@ import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -35,6 +36,31 @@ public class OrthancWorklistHandler {
 
     @Autowired
     private OrthancTokenProvider orthancTokenProvider;
+
+    /** Used when {@value #STATION_AET_PROPERTY} is unset or blank: the value hard-coded before UVL-EMR#424. */
+    public static final String DEFAULT_STATION_AET = "ORTHANC";
+
+    /** Spring maps the environment variable ORTHANC_WORKLIST_STATION_AET onto this property. */
+    public static final String STATION_AET_PROPERTY = "orthanc.worklist.station.aet";
+
+    /**
+     * The AE title written as ScheduledStationAETitle - the MODALITY expected to perform the step,
+     * not Orthanc (UVL-EMR#424).
+     *
+     * <p>This was the literal "ORTHANC", the name of the PACS. A modality asks for its worklist
+     * filtered on its own AE title, and DICOM matching compares that with the value in each item,
+     * so every entry this bridge wrote was invisible to the X-ray unit. Measured by C-FIND on UAT on
+     * 7 Aug 2026 with two entries present: ScheduledStationAETitle=XMARU returned only the entry
+     * labelled XMARU, an empty value returned both. A patch reading ORTHANC_WORKLIST_STATION_AET was
+     * shipped in a jar that day but never committed here, so every jar built since went back to
+     * ORTHANC while the compose file kept setting a variable nothing read.
+     *
+     * <p>The Mugamba unit's AE title is XMARUM, as photographed on the unit itself; the deployment
+     * sets it.
+     * Unset or blank keeps ORTHANC, so a site without the variable behaves as before.
+     */
+    @Value("${" + STATION_AET_PROPERTY + ":" + DEFAULT_STATION_AET + "}")
+    private String stationAeTitle = DEFAULT_STATION_AET;
 
     private final OkHttpClient httpClient = new OkHttpClient();
     private final ObjectMapper mapper = new ObjectMapper();
@@ -80,7 +106,7 @@ public class OrthancWorklistHandler {
         step.put("Modality", modality != null ? modality : "XR");
         step.put("ScheduledProcedureStepStartDate", today);
         step.put("ScheduledProcedureStepStartTime", now);
-        step.put("ScheduledStationAETitle", "ORTHANC");
+        step.put("ScheduledStationAETitle", stationAeTitle());
         step.put("ScheduledProcedureStepID", accessionNumber);
         step.put("ScheduledProcedureStepDescription", procedureDesc != null ? procedureDesc : "Radiology");
         stepSequence.add(step);
@@ -110,6 +136,12 @@ public class OrthancWorklistHandler {
                 id, patientId, accessionNumber);
             return id;
         }
+    }
+
+    /** The configured station AE title, trimmed; ORTHANC if it is blank. */
+    String stationAeTitle() {
+        String aet = stationAeTitle == null ? "" : stationAeTitle.trim();
+        return aet.isEmpty() ? DEFAULT_STATION_AET : aet;
     }
 
     /**
