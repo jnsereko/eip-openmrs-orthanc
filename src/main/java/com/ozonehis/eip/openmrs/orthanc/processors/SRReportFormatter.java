@@ -45,12 +45,13 @@ public final class SRReportFormatter {
         List<String> lines = new ArrayList<>();
         collect(tags.path("ContentSequence"), lines);
 
+        // One line: the O3 Results tab shows the value in a table cell and drops line breaks
         StringBuilder out = new StringBuilder("Report");
         if (!title.isEmpty()) {
             out.append(": ").append(title);
         }
-        for (String line : lines) {
-            out.append("\n- ").append(line);
+        if (!lines.isEmpty()) {
+            out.append(" \u2014 ").append(String.join("; ", lines)).append('.');
         }
         return out.toString();
     }
@@ -78,7 +79,7 @@ public final class SRReportFormatter {
         }
     }
 
-    /** "label: Length 97.2 mm", or just the label or just the measurements when one side is missing. */
+    /** "label (Length 97.2 mm)", or just the label or just the measurements when one side is missing. */
     private static String measurementGroup(JsonNode group) {
         List<String> labels = new ArrayList<>();
         List<String> measures = new ArrayList<>();
@@ -98,12 +99,12 @@ public final class SRReportFormatter {
                 addIfPresent(measures, measurement(concept, item.path("MeasuredValueSequence").path(0)));
             }
         }
-        String label = String.join("; ", labels);
+        String label = String.join(", ", labels);
         String measure = String.join(", ", measures);
         if (label.isEmpty()) {
             return measure;
         }
-        return measure.isEmpty() ? label : label + ": " + measure;
+        return measure.isEmpty() ? label : label + " (" + measure + ")";
     }
 
     private static String measurement(String concept, JsonNode measured) {

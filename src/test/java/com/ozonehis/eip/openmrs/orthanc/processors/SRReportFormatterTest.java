@@ -25,7 +25,7 @@ class SRReportFormatterTest {
             JsonNode tags = mapper.readTree(in);
 
             assertEquals(
-                    "Report: Chest PA\n- UAT test report - no abnormality: Length 97.2 mm",
+                    "Report: Chest PA \u2014 UAT test report - no abnormality (Length 97.2 mm).",
                     SRReportFormatter.format(tags));
         }
     }
@@ -47,6 +47,6 @@ class SRReportFormatterTest {
                 + "\"MeasuredValueSequence\":[{\"NumericValue\":\"12.04\","
                 + "\"MeasurementUnitsCodeSequence\":[{\"CodeValue\":\"mm2\"}]}]}]}]}");
 
-        assertEquals("Report\n- Normal heart size\n- Area 12 mm2", SRReportFormatter.format(tags));
+        assertEquals("Report \u2014 Normal heart size; Area 12 mm2.", SRReportFormatter.format(tags));
     }
 }
