@@ -17,6 +17,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -159,7 +160,7 @@ public class OpenmrsDiagnosticReportHandler {
             }
         }
 
-        String resultUUID = createObs(producerTemplate, new ObjectMapper().writeValueAsString(obs), patientUUID);
+        String resultUUID = createObs(new ObjectMapper().writeValueAsString(obs), patientUUID);
         log.info("updateDiagnosticReportWithSR: recorded SR result {} for patient {} (order {})",
                 resultUUID, patientUUID, hasOrder ? orderUuid : "none");
 
@@ -169,20 +170,27 @@ public class OpenmrsDiagnosticReportHandler {
         return resultUUID;
     }
 
-    private String createObs(ProducerTemplate producerTemplate, String obsJson, String patientUUID) {
-        Map<String, Object> headers = new HashMap<>();
-        headers.put(Constants.CAMEL_HTTP_METHOD, Constants.POST);
-        headers.put(Constants.CONTENT_TYPE, Constants.APPLICATION_JSON);
-        headers.put(Constants.AUTHORIZATION, openmrsConfig.authHeader());
-
-        String response = producerTemplate.requestBodyAndHeaders(
-                "direct:openmrs-create-obs-native-route", obsJson, headers, String.class);
-        try {
-            Map<?, ?> result = new ObjectMapper().readValue(response, Map.class);
-            return (String) result.get("uuid");
-        } catch (Exception e) {
-            log.warn("createObs: could not parse Observation UUID for patient {}: {}", patientUUID, e.getMessage());
-            return null;
+    /**
+     * Posted as UTF-8 bytes. The Camel route used before sent the body in the
+     * HTTP component's default charset, so on UAT an em dash was stored as "?",
+     * and so would every accented letter of a French report (UVL-EMR#427).
+     */
+    private String createObs(String obsJson, String patientUUID) {
+        Request request = new Request.Builder()
+                .url(openmrsBaseUrl + "/ws/rest/v1/obs")
+                .header("Authorization", openmrsConfig.authHeader())
+                .post(RequestBody.create(
+                        obsJson.getBytes(StandardCharsets.UTF_8), MediaType.get("application/json; charset=utf-8")))
+                .build();
+        try (Response response = HTTP.newCall(request).execute()) {
+            String body = response.body() == null ? "" : response.body().string();
+            if (!response.isSuccessful()) {
+                throw new IllegalStateException("OpenMRS answered " + response.code() + " to the obs create");
+            }
+            return new ObjectMapper().readTree(body).path("uuid").asText(null);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("Could not create the report Observation for patient " + patientUUID
+                    + ": " + e.getMessage(), e);
         }
     }
 
