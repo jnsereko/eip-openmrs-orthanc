@@ -49,4 +49,13 @@ class SRReportFormatterTest {
 
         assertEquals("Report \u2014 Normal heart size; Area 12 mm2.", SRReportFormatter.format(tags));
     }
+
+    @Test
+    void shouldAppendTheAuthorWhenKnown() {
+        assertEquals(
+                "Report: Chest PA \u2014 Lungs clear (Length 81.5 mm). Reported by: Aline Nelly DUSABE.",
+                SRReportFormatter.withAuthor("Report: Chest PA \u2014 Lungs clear (Length 81.5 mm).", "Aline Nelly DUSABE"));
+        assertEquals("Report: Chest PA. Reported by: Didier.", SRReportFormatter.withAuthor("Report: Chest PA", "Didier"));
+        assertEquals("Report: Chest PA", SRReportFormatter.withAuthor("Report: Chest PA", null));
+    }
 }

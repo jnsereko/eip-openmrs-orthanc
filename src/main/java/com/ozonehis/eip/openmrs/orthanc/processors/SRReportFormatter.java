@@ -56,6 +56,15 @@ public final class SRReportFormatter {
         return out.toString();
     }
 
+    /** "… Reported by: <name>." — unchanged when the author is unknown. */
+    public static String withAuthor(String report, String author) {
+        if (author == null || author.isBlank()) {
+            return report;
+        }
+        String text = report.endsWith(".") ? report : report + ".";
+        return text + " Reported by: " + author.trim() + ".";
+    }
+
     private static void collect(JsonNode items, List<String> lines) {
         for (JsonNode item : items) {
             String type = text(item, "ValueType");

@@ -60,6 +60,9 @@ public class ImagingSRProcessor implements Processor {
     @Autowired
     private CursorStore cursorStore;
 
+    @Autowired
+    private ReportAuthorResolver reportAuthorResolver;
+
     @Value("${orthanc.baseUrl:http://orthanc:8042}")
     private String orthancBaseUrl;
 
@@ -178,6 +181,9 @@ public class ImagingSRProcessor implements Processor {
                     instanceId, e.getMessage());
                 srText = SRReportFormatter.format(seriesDicomTags);
             }
+
+            // Who saved it: OHIF writes no author into the SR (UVL-EMR#429)
+            srText = SRReportFormatter.withAuthor(srText, reportAuthorResolver.resolve(parentStudy, instanceId));
 
             // Resolve which specific radiology order this SR belongs to, via
             // the study's AccessionNumber (set by RadiologyOrderWorklistProcessor
