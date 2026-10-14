@@ -1,0 +1,220 @@
+{
+  "SeriesDescription": "Chest PA",
+  "Modality": "SR",
+  "ContentSequence": [
+    {
+      "ConceptCodeSequence": [
+        {
+          "CodeMeaning": "English",
+          "CodeValue": "en",
+          "CodingSchemeDesignator": "RFC5646"
+        }
+      ],
+      "ConceptNameCodeSequence": [
+        {
+          "CodeMeaning": "Language of Content Item and Descendants",
+          "CodeValue": "121049",
+          "CodingSchemeDesignator": "DCM"
+        }
+      ],
+      "ContentSequence": [
+        {
+          "ConceptCodeSequence": [
+            {
+              "CodeMeaning": "United States",
+              "CodeValue": "US",
+              "CodingSchemeDesignator": "ISO3166_1"
+            }
+          ],
+          "ConceptNameCodeSequence": [
+            {
+              "CodeMeaning": "Country of Language",
+              "CodeValue": "121046",
+              "CodingSchemeDesignator": "DCM"
+            }
+          ],
+          "RelationshipType": "HAS CONCEPT MOD",
+          "ValueType": "CODE"
+        }
+      ],
+      "RelationshipType": "HAS CONCEPT MOD",
+      "ValueType": "CODE"
+    },
+    {
+      "ConceptNameCodeSequence": [
+        {
+          "CodeMeaning": "Person Observer Name",
+          "CodeValue": "121008",
+          "CodingSchemeDesignator": "DCM"
+        }
+      ],
+      "PersonName": "REDACTED",
+      "RelationshipType": "HAS OBS CONTEXT",
+      "ValueType": "PNAME"
+    },
+    {
+      "ConceptCodeSequence": [
+        {
+          "CodeMeaning": "Imaging procedure",
+          "CodeValue": "363679005",
+          "CodingSchemeDesignator": "SCT"
+        }
+      ],
+      "ConceptNameCodeSequence": [
+        {
+          "CodeMeaning": "Procedure reported",
+          "CodeValue": "121058",
+          "CodingSchemeDesignator": "DCM"
+        }
+      ],
+      "RelationshipType": "HAS CONCEPT MOD",
+      "ValueType": "CODE"
+    },
+    {
+      "ConceptNameCodeSequence": [
+        {
+          "CodeMeaning": "Image Library",
+          "CodeValue": "111028",
+          "CodingSchemeDesignator": "DCM"
+        }
+      ],
+      "ContentSequence": [
+        {
+          "ConceptNameCodeSequence": [
+            {
+              "CodeMeaning": "Image Library Group",
+              "CodeValue": "126200",
+              "CodingSchemeDesignator": "DCM"
+            }
+          ],
+          "ContentSequence": [
+            {
+              "ReferencedSOPSequence": [
+                {
+                  "ReferencedSOPClassUID": "1.2.840.10008.5.1.4.1.1.1.1",
+                  "ReferencedSOPInstanceUID": "1.2.410.200067.100.3.20261013.1420240267.26334.1.1"
+                }
+              ],
+              "RelationshipType": "CONTAINS",
+              "ValueType": "IMAGE"
+            }
+          ],
+          "ContinuityOfContent": "SEPARATE",
+          "RelationshipType": "CONTAINS",
+          "ValueType": "CONTAINER"
+        }
+      ],
+      "ContinuityOfContent": "SEPARATE",
+      "RelationshipType": "CONTAINS",
+      "ValueType": "CONTAINER"
+    },
+    {
+      "ConceptNameCodeSequence": [
+        {
+          "CodeMeaning": "Imaging Measurements",
+          "CodeValue": "126010",
+          "CodingSchemeDesignator": "DCM"
+        }
+      ],
+      "ContentSequence": [
+        {
+          "ConceptNameCodeSequence": [
+            {
+              "CodeMeaning": "Measurement Group",
+              "CodeValue": "125007",
+              "CodingSchemeDesignator": "DCM"
+            }
+          ],
+          "ContentSequence": [
+            {
+              "ConceptNameCodeSequence": [
+                {
+                  "CodeMeaning": "Tracking Identifier",
+                  "CodeValue": "112039",
+                  "CodingSchemeDesignator": "DCM"
+                }
+              ],
+              "RelationshipType": "HAS OBS CONTEXT",
+              "TextValue": "Cornerstone3DTools@^0.1.0:Length",
+              "ValueType": "TEXT"
+            },
+            {
+              "ConceptNameCodeSequence": [
+                {
+                  "CodeMeaning": "Tracking Unique Identifier",
+                  "CodeValue": "112040",
+                  "CodingSchemeDesignator": "DCM"
+                }
+              ],
+              "RelationshipType": "HAS OBS CONTEXT",
+              "UID": "2.25.659023933607849794458481938800629247432",
+              "ValueType": "UIDREF"
+            },
+            {
+              "ConceptNameCodeSequence": [
+                {
+                  "CodeMeaning": "Length",
+                  "CodeValue": "410668003",
+                  "CodingSchemeDesignator": "SCT"
+                }
+              ],
+              "ContentSequence": [
+                {
+                  "ContentSequence": [
+                    {
+                      "ReferencedSOPSequence": [
+                        {
+                          "ReferencedSOPClassUID": "1.2.840.10008.5.1.4.1.1.1.1",
+                          "ReferencedSOPInstanceUID": "1.2.410.200067.100.3.20261013.1420240267.26334.1.1"
+                        }
+                      ],
+                      "RelationshipType": "SELECTED FROM",
+                      "ValueType": "IMAGE"
+                    }
+                  ],
+                  "GraphicData": "607.1229248046875\\944.8028564453125\\1146.4388427734375\\1487.3289794921875",
+                  "GraphicType": "POLYLINE",
+                  "RelationshipType": "INFERRED FROM",
+                  "ValueType": "SCOORD"
+                }
+              ],
+              "MeasuredValueSequence": [
+                {
+                  "MeasurementUnitsCodeSequence": [
+                    {
+                      "CodeMeaning": "mm",
+                      "CodeValue": "mm",
+                      "CodingSchemeDesignator": "UCUM",
+                      "CodingSchemeVersion": "1.4"
+                    }
+                  ],
+                  "NumericValue": "97.1526139870686"
+                }
+              ],
+              "RelationshipType": "CONTAINS",
+              "ValueType": "NUM"
+            },
+            {
+              "ConceptNameCodeSequence": [
+                {
+                  "CodeMeaning": "Comment",
+                  "CodeValue": "121106",
+                  "CodingSchemeDesignator": "DCM"
+                }
+              ],
+              "RelationshipType": "CONTAINS",
+              "TextValue": "UAT test report - no abnormality",
+              "ValueType": "TEXT"
+            }
+          ],
+          "ContinuityOfContent": "SEPARATE",
+          "RelationshipType": "CONTAINS",
+          "ValueType": "CONTAINER"
+        }
+      ],
+      "ContinuityOfContent": "SEPARATE",
+      "RelationshipType": "CONTAINS",
+      "ValueType": "CONTAINER"
+    }
+  ]
+}
