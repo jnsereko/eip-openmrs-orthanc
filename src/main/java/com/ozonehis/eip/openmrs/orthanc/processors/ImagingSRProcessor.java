@@ -193,7 +193,7 @@ public class ImagingSRProcessor implements Processor {
 
             // Record the SR result as a new Observation
             openmrsDiagnosticReportHandler.updateDiagnosticReportWithSR(
-                    producerTemplate, patientUUID, srText, procedureConceptUuid, orderUuid);
+                    producerTemplate, patientUUID, srText, procedureConceptUuid, orderUuid, instanceId);
 
             processedSRRepository.save(instanceId);
 

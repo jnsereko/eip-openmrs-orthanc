@@ -37,6 +37,8 @@ public class OpenmrsDiagnosticReportHandler {
 
     private static final OkHttpClient HTTP = new OkHttpClient();
 
+    private static final String SR_COMMENT_PREFIX = "orthanc-sr:";
+
     @Autowired
     private OpenmrsConfig openmrsConfig;
 
@@ -112,22 +114,41 @@ public class OpenmrsDiagnosticReportHandler {
      * and its encounter, and the order's fulfiller status is set to COMPLETED,
      * so the chart shows the report as the order's result and the order as done
      * (UVL-EMR#427). The time is when the report reached OpenMRS, not midnight.
+     *
+     * <p>The Observation's comment carries the SR instance id, and an existing
+     * Observation with that comment is reused instead of creating another. The
+     * processed-SR table alone is not enough: on UAT the create returned 401
+     * although OpenMRS had saved the Observation, the SR was never marked
+     * processed, and the next start (the changes cursor is in memory) filed the
+     * same report a second time.
      */
     public String updateDiagnosticReportWithSR(
             ProducerTemplate producerTemplate,
             String patientUUID,
             String srText,
             String procedureConceptUuid,
-            String orderUuid) throws JsonProcessingException {
+            String orderUuid,
+            String srInstanceId) throws JsonProcessingException {
 
         boolean hasOrder = orderUuid != null && !orderUuid.isEmpty();
         String observationConceptUuid = (procedureConceptUuid != null && !procedureConceptUuid.isEmpty())
                 ? procedureConceptUuid : Constants.GENERAL_PATIENT_NOTE_CONCEPT_UUID;
+        String marker = SR_COMMENT_PREFIX + srInstanceId;
+
+        String existingUUID = findObsByComment(patientUUID, observationConceptUuid, marker);
+        if (existingUUID != null) {
+            log.info("SR {} is already recorded as Observation {}, not filing it again", srInstanceId, existingUUID);
+            if (hasOrder) {
+                markOrderCompleted(orderUuid);
+            }
+            return existingUUID;
+        }
 
         Map<String, Object> obs = new LinkedHashMap<>();
         obs.put("person", patientUUID);
         obs.put("concept", observationConceptUuid);
         obs.put("value", srText);
+        obs.put("comment", marker);
         // A few seconds back so a clock a little ahead of OpenMRS never trips "obs date in the future"
         obs.put("obsDatetime", OBS_DATETIME.format(ZonedDateTime.now(ZoneOffset.UTC).minusSeconds(10)));
         if (hasOrder) {
@@ -162,6 +183,32 @@ public class OpenmrsDiagnosticReportHandler {
         } catch (Exception e) {
             log.warn("createObs: could not parse Observation UUID for patient {}: {}", patientUUID, e.getMessage());
             return null;
+        }
+    }
+
+    /**
+     * Throws when OpenMRS cannot be asked: filing blind is what created the
+     * duplicate, so the SR is left unprocessed and retried instead.
+     */
+    private String findObsByComment(String patientUUID, String conceptUuid, String comment) {
+        Request request = new Request.Builder()
+                .url(openmrsBaseUrl + "/ws/rest/v1/obs?patient=" + patientUUID + "&concept=" + conceptUuid
+                        + "&v=custom:(uuid,comment)&limit=100")
+                .header("Authorization", openmrsConfig.authHeader())
+                .build();
+        try (Response response = HTTP.newCall(request).execute()) {
+            if (!response.isSuccessful() || response.body() == null) {
+                throw new IllegalStateException("OpenMRS answered " + response.code() + " to the obs lookup");
+            }
+            for (com.fasterxml.jackson.databind.JsonNode obs :
+                    new ObjectMapper().readTree(response.body().string()).path("results")) {
+                if (comment.equals(obs.path("comment").asText(""))) {
+                    return obs.path("uuid").asText();
+                }
+            }
+            return null;
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("Could not look up existing report Observations: " + e.getMessage(), e);
         }
     }
 
