@@ -17,12 +17,27 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.util.HashMap;
+import java.nio.charset.StandardCharsets;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 
 @Slf4j
 @Component
 public class OpenmrsDiagnosticReportHandler {
+
+    private static final DateTimeFormatter OBS_DATETIME = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSZ");
+
+    private static final OkHttpClient HTTP = new OkHttpClient();
+
+    private static final String SR_COMMENT_PREFIX = "orthanc-sr:";
 
     @Autowired
     private OpenmrsConfig openmrsConfig;
@@ -42,7 +57,11 @@ public class OpenmrsDiagnosticReportHandler {
      * DiagnosticReport chain, whose conclusion/presentedForm/result
      * fields never persisted in OpenMRS anyway.
      *
-     * @return the new Observation's UUID, or null if creation failed
+     * <p>Posted as UTF-8 through {@link #createObs}, like the SR report: the
+     * Camel route used before sent the body in the HTTP component's default
+     * charset, which turns the accents of the French text into "?".
+     *
+     * @return the new Observation's UUID, or null if OpenMRS returned none
      */
     public String saveResult(
             ProducerTemplate producerTemplate,
@@ -65,21 +84,11 @@ public class OpenmrsDiagnosticReportHandler {
                 value.replace("\"", "\\\"").replace("\n", "\\n"),
                 effectiveDate);
 
-        Map<String, Object> headers = new HashMap<>();
-        headers.put(Constants.CAMEL_HTTP_METHOD, Constants.POST);
-        headers.put(Constants.CONTENT_TYPE, Constants.APPLICATION_JSON);
-        headers.put(Constants.AUTHORIZATION, openmrsConfig.authHeader());
-
-        String response = producerTemplate.requestBodyAndHeaders(
-                "direct:openmrs-create-obs-native-route", obsJson, headers, String.class);
-
-        String obsUUID = null;
-        try {
-            Map<?, ?> result = new ObjectMapper().readValue(response, Map.class);
-            obsUUID = (String) result.get("uuid");
+        String obsUUID = createObs(obsJson, patientUUID);
+        if (obsUUID == null) {
+            log.warn("saveResult: OpenMRS returned no Observation UUID for patient {}", patientUUID);
+        } else {
             log.info("saveResult: created Observation {} for patient {}", obsUUID, patientUUID);
-        } catch (Exception e) {
-            log.warn("saveResult: could not parse Observation UUID from response: {}", e.getMessage());
         }
         return obsUUID;
     }
@@ -94,21 +103,157 @@ public class OpenmrsDiagnosticReportHandler {
      * the same SR instance). This goes straight to creating the result,
      * using the exact ordered procedure's concept when resolved via
      * AccessionNumber, falling back to the generic note concept otherwise.
+     *
+     * <p>When the order is known, the Observation is filed against that order
+     * and its encounter, and the order's fulfiller status is set to COMPLETED,
+     * so the chart shows the report as the order's result and the order as done
+     * (UVL-EMR#427). The time is when the report reached OpenMRS, not midnight.
+     *
+     * <p>The Observation's comment carries the SR instance id, and an existing
+     * Observation with that comment is reused instead of creating another. The
+     * processed-SR table alone is not enough: on UAT the create returned 401
+     * although OpenMRS had saved the Observation, the SR was never marked
+     * processed, and the next start (the changes cursor is in memory) filed the
+     * same report a second time.
      */
     public String updateDiagnosticReportWithSR(
             ProducerTemplate producerTemplate,
             String patientUUID,
             String srText,
-            String procedureConceptUuid) throws JsonProcessingException {
+            String procedureConceptUuid,
+            String orderUuid,
+            String srInstanceId) throws JsonProcessingException {
 
+        boolean hasOrder = orderUuid != null && !orderUuid.isEmpty();
         String observationConceptUuid = (procedureConceptUuid != null && !procedureConceptUuid.isEmpty())
                 ? procedureConceptUuid : Constants.GENERAL_PATIENT_NOTE_CONCEPT_UUID;
+        String marker = SR_COMMENT_PREFIX + srInstanceId;
 
-        String resultUUID = saveResult(
-                producerTemplate, patientUUID, observationConceptUuid, srText, null);
+        String existingUUID = findObsByComment(patientUUID, observationConceptUuid, marker);
+        if (existingUUID != null) {
+            log.info("SR {} is already recorded as Observation {}, not filing it again", srInstanceId, existingUUID);
+            if (hasOrder) {
+                markOrderCompleted(orderUuid);
+            }
+            return existingUUID;
+        }
 
-        log.info("updateDiagnosticReportWithSR: recorded SR result {} for patient {}", resultUUID, patientUUID);
+        Map<String, Object> obs = new LinkedHashMap<>();
+        obs.put("person", patientUUID);
+        obs.put("concept", observationConceptUuid);
+        obs.put("value", srText);
+        obs.put("comment", marker);
+        // A few seconds back so a clock a little ahead of OpenMRS never trips "obs date in the future"
+        obs.put("obsDatetime", OBS_DATETIME.format(ZonedDateTime.now(ZoneOffset.UTC).minusSeconds(10)));
+        if (hasOrder) {
+            obs.put("order", orderUuid);
+            String encounterUuid = getOrderEncounterUuid(orderUuid);
+            if (encounterUuid != null) {
+                obs.put("encounter", encounterUuid);
+            }
+        }
+
+        String resultUUID = createObs(new ObjectMapper().writeValueAsString(obs), patientUUID);
+        log.info("updateDiagnosticReportWithSR: recorded SR result {} for patient {} (order {})",
+                resultUUID, patientUUID, hasOrder ? orderUuid : "none");
+
+        if (hasOrder && resultUUID != null) {
+            markOrderCompleted(orderUuid);
+        }
         return resultUUID;
+    }
+
+    /**
+     * Posted as UTF-8 bytes. The Camel route used before sent the body in the
+     * HTTP component's default charset, so on UAT an em dash was stored as "?",
+     * and so would every accented letter of a French report (UVL-EMR#427).
+     */
+    private String createObs(String obsJson, String patientUUID) {
+        Request request = new Request.Builder()
+                .url(openmrsBaseUrl + "/ws/rest/v1/obs")
+                .header("Authorization", openmrsConfig.authHeader())
+                .post(RequestBody.create(
+                        obsJson.getBytes(StandardCharsets.UTF_8), MediaType.get("application/json; charset=utf-8")))
+                .build();
+        try (Response response = HTTP.newCall(request).execute()) {
+            String body = response.body() == null ? "" : response.body().string();
+            if (!response.isSuccessful()) {
+                throw new IllegalStateException("OpenMRS answered " + response.code() + " to the obs create");
+            }
+            return new ObjectMapper().readTree(body).path("uuid").asText(null);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("Could not create the report Observation for patient " + patientUUID
+                    + ": " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Throws when OpenMRS cannot be asked: filing blind is what created the
+     * duplicate, so the SR is left unprocessed and retried instead.
+     */
+    private String findObsByComment(String patientUUID, String conceptUuid, String comment) {
+        Request request = new Request.Builder()
+                .url(openmrsBaseUrl + "/ws/rest/v1/obs?patient=" + patientUUID + "&concept=" + conceptUuid
+                        + "&v=custom:(uuid,comment)&limit=100")
+                .header("Authorization", openmrsConfig.authHeader())
+                .build();
+        try (Response response = HTTP.newCall(request).execute()) {
+            if (!response.isSuccessful() || response.body() == null) {
+                throw new IllegalStateException("OpenMRS answered " + response.code() + " to the obs lookup");
+            }
+            for (com.fasterxml.jackson.databind.JsonNode obs :
+                    new ObjectMapper().readTree(response.body().string()).path("results")) {
+                if (comment.equals(obs.path("comment").asText(""))) {
+                    return obs.path("uuid").asText();
+                }
+            }
+            return null;
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("Could not look up existing report Observations: " + e.getMessage(), e);
+        }
+    }
+
+    private String getOrderEncounterUuid(String orderUuid) {
+        Request request = new Request.Builder()
+                .url(openmrsBaseUrl + "/ws/rest/v1/order/" + orderUuid + "?v=custom:(uuid,encounter:(uuid))")
+                .header("Authorization", openmrsConfig.authHeader())
+                .build();
+        try (Response response = HTTP.newCall(request).execute()) {
+            if (!response.isSuccessful() || response.body() == null) {
+                log.warn("Could not read order {}: HTTP {}", orderUuid, response.code());
+                return null;
+            }
+            String uuid = new ObjectMapper().readTree(response.body().string())
+                    .path("encounter").path("uuid").asText("");
+            return uuid.isEmpty() ? null : uuid;
+        } catch (Exception e) {
+            log.warn("Could not read the encounter of order {}: {}", orderUuid, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Failure here is logged, not thrown: the report is already in the chart,
+     * and a retry would record it a second time.
+     */
+    private void markOrderCompleted(String orderUuid) {
+        RequestBody body = RequestBody.create(
+                "{\"fulfillerStatus\":\"COMPLETED\",\"fulfillerComment\":\"Radiology report received from PACS\"}",
+                MediaType.get("application/json"));
+        Request request = new Request.Builder()
+                .url(openmrsBaseUrl + "/ws/rest/v1/order/" + orderUuid + "/fulfillerdetails")
+                .header("Authorization", openmrsConfig.authHeader())
+                .post(body)
+                .build();
+        try (Response response = HTTP.newCall(request).execute()) {
+            if (response.isSuccessful()) {
+                log.info("Marked order {} COMPLETED", orderUuid);
+            } else {
+                log.warn("Could not mark order {} COMPLETED: HTTP {}", orderUuid, response.code());
+            }
+        } catch (Exception e) {
+            log.warn("Could not mark order {} COMPLETED: {}", orderUuid, e.getMessage());
+        }
     }
 
     /**

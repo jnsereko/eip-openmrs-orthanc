@@ -38,6 +38,15 @@ import org.springframework.stereotype.Component;
 public class ImagingStudyProcessor implements Processor {
     private static final String ORTHANC_RENDERED_IMAGE_ENDPOINT = "%s/instances/%s/rendered";
     private static final String STRUCTURED_REPORT_MODALITY = "SR";
+    /**
+     * Text of the result Observation that marks a study as received. It used to end with the Stone
+     * viewer URL, but that link answers 403 without a token, and studies are opened from the
+     * Imagerie card instead (UVL-EMR#494). The Observation itself stays: the SR report and the
+     * orphaned-study cleanup find it through {@link ProcessedStudyRepository}. The attachment
+     * caption keeps the viewer URL, because the card reads the orthancId from it.
+     */
+    static final String STUDY_RECEIVED_TEXT =
+            "Étude d'imagerie reçue – ouvrir depuis la carte Imagerie (Pièces jointes).";
     @Autowired
     private ProcessedStudyRepository processedStudyRepository;
     @Value("${orthanc.publicUrl:${orthanc.baseUrl}}")
@@ -84,14 +93,11 @@ public class ImagingStudyProcessor implements Processor {
                     continue;
                 }
                 String studyDate = study.getImagingStudyMainDicomTags().getStudyDate();
-                String viewerUrl = orthancPublicUrl
-                        + "/stone-webviewer/index.html?study=" + studyInstanceUID
-                        + "&orthancId=" + study.id;
                 String resultUUID = openmrsDiagnosticReportHandler.saveResult(
                         producerTemplate,
                         patientUUID,
                         Constants.GENERAL_PATIENT_NOTE_CONCEPT_UUID,
-                        "DICOM study available. View at: " + viewerUrl,
+                        STUDY_RECEIVED_TEXT,
                         studyDate);
                 processedStudyRepository.save(study.id, patientUUID, resultUUID);
                 // Upload preview image as attachment
@@ -165,7 +171,7 @@ public class ImagingStudyProcessor implements Processor {
             }
         }
         // Deliberately a warning, not an exception: a study can legitimately be reports only, and
-        // the DiagnosticReport and viewer link above are already saved either way.
+        // the study-received Observation above is already saved either way.
         log.warn("No renderable instance found in study {}, no image attached", study.id);
     }
     private boolean doesObsExists(ProducerTemplate producerTemplate, String patientUUID, String imagingStudyID)
