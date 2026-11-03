@@ -137,6 +137,16 @@ public class RadiologyConcepts {
         modalities.put("bc52d033-8df5-466b-abf9-e0679b42c043", "XR"); // Sacrum X-ray
         modalities.put("8155e2e0-5b62-42bc-b47c-0702aaafe3df", "US"); // EC01 - Abdominal ultrasound
         modalities.put("521361cf-ce7d-49a6-9721-8ebad1b76702", "US"); // EC02 - Gastrointestinal ultrasound
+        // The first UVL X-ray concepts (retired in OpenMRS, still in the 530c314 default list): kept so
+        // nothing the earlier bridge handled is dropped, e.g. an order placed before they were retired.
+        modalities.put("d0b5d4a0-1001-0000-0000-000000000001", "XR"); // Chest X-Ray (retired)
+        modalities.put("d0b5d4a0-1002-0000-0000-000000000001", "XR"); // Abdominal X-Ray (retired)
+        modalities.put("d0b5d4a0-1003-0000-0000-000000000001", "XR"); // Hand X-Ray (retired)
+        modalities.put("d0b5d4a0-1004-0000-0000-000000000001", "XR"); // Foot X-Ray (retired)
+        modalities.put("d0b5d4a0-1005-0000-0000-000000000001", "XR"); // Knee X-Ray (retired)
+        modalities.put("d0b5d4a0-1006-0000-0000-000000000001", "XR"); // Spine X-Ray (retired)
+        modalities.put("d0b5d4a0-1007-0000-0000-000000000001", "XR"); // Pelvis X-Ray (retired)
+        modalities.put("d0b5d4a0-1008-0000-0000-000000000001", "XR"); // Skull X-Ray (retired)
         MODALITY_BY_CONCEPT = Collections.unmodifiableMap(modalities);
     }
 

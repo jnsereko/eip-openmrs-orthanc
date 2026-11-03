@@ -74,9 +74,17 @@ class RadiologyConceptsTest {
             "e4b471d9-81d6-48c4-8b97-20fdeeeac280", "30cdefe7-775b-4302-b165-f2540fa207da",
             "0c6e5f9a-75cf-444c-9415-6c2ac870392c", "bc52d033-8df5-466b-abf9-e0679b42c043"));
 
+    /** The first UVL X-ray concepts, retired in OpenMRS but in the 530c314 default list that sites run. */
+    private static final Set<String> RETIRED_D0B5D4A0 = new LinkedHashSet<>(Arrays.asList(
+            "d0b5d4a0-1001-0000-0000-000000000001", "d0b5d4a0-1002-0000-0000-000000000001",
+            "d0b5d4a0-1003-0000-0000-000000000001", "d0b5d4a0-1004-0000-0000-000000000001",
+            "d0b5d4a0-1005-0000-0000-000000000001", "d0b5d4a0-1006-0000-0000-000000000001",
+            "d0b5d4a0-1007-0000-0000-000000000001", "d0b5d4a0-1008-0000-0000-000000000001"));
+
     /**
      * The default since #340: RX01-RX07, the 22 M3 X-rays and the EC01/EC02 ultrasounds - the members
-     * of the "Imaging procedures" set - without the dead d0b5d4a0 X-rays.
+     * of the "Imaging procedures" set - plus the retired d0b5d4a0 X-rays, kept so nothing the 530c314
+     * bridge handled is dropped.
      */
     private static final Set<String> DEFAULT_SINCE_304 = new LinkedHashSet<>(RX01_TO_RX07);
 
@@ -84,6 +92,7 @@ class RadiologyConceptsTest {
         DEFAULT_SINCE_304.addAll(M3_XRAYS);
         DEFAULT_SINCE_304.add(EC01);
         DEFAULT_SINCE_304.add(EC02);
+        DEFAULT_SINCE_304.addAll(RETIRED_D0B5D4A0);
     }
 
     @Test
@@ -100,7 +109,7 @@ class RadiologyConceptsTest {
 
     @Test
     void defaultIsRx01ToRx07TheM3XraysAndTheTwoUltrasounds() {
-        assertEquals(31, RadiologyConcepts.DEFAULT_UUIDS.size());
+        assertEquals(39, RadiologyConcepts.DEFAULT_UUIDS.size());
         assertEquals(DEFAULT_SINCE_304, RadiologyConcepts.DEFAULT_UUIDS);
         assertEquals(DEFAULT_SINCE_304, new RadiologyConcepts().getUuids());
         assertEquals(DEFAULT_SINCE_304, new RadiologyConcepts(null).getUuids());
@@ -251,10 +260,11 @@ class RadiologyConceptsTest {
     }
 
     @Test
-    void deadD0b5d4a0XraysAreNotInTheDefault() {
-        // They are in no orderable concept set and their order type never becomes a ServiceRequest.
-        for (String uuid : RadiologyConcepts.DEFAULT_UUIDS) {
-            assertFalse(uuid.startsWith("d0b5d4a0-"), uuid);
+    void theRetiredD0b5d4a0XraysStayInTheDefault() {
+        // Retired and in no orderable set, but the 530c314 bridge had them: keeping them drops nothing.
+        for (String uuid : RETIRED_D0B5D4A0) {
+            assertTrue(RadiologyConcepts.DEFAULT_UUIDS.contains(uuid), uuid);
+            assertEquals("XR", RadiologyConcepts.modalityFor(uuid, null), uuid);
         }
     }
 
