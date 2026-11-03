@@ -113,9 +113,9 @@ public class ImagingStudyRouting extends RouteBuilder {
         // Native REST equivalent - does not require an Encounter, unlike the
         // FHIR route above. Confirmed via live testing that OpenMRS's Obs
         // data model has no actual requirement for one; only the FHIR schema
-        // does. Used by saveResult() as a lighter-weight replacement for the
-        // old createDiagnosticReport()+createObservationAndLinkToReport()
-        // chain.
+        // does. saveResult() no longer uses it: it posts the Observation as
+        // UTF-8 with OkHttp instead, because this route sends the body in the
+        // HTTP component's default charset and loses accented letters.
         from("direct:openmrs-create-obs-native-route")
             .routeId("openmrs-create-obs-native")
             .toD(openmrsBaseUrl + "/ws/rest/v1/obs")

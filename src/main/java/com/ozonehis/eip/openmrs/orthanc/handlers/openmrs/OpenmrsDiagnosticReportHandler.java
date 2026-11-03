@@ -21,7 +21,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import okhttp3.MediaType;
@@ -58,7 +57,11 @@ public class OpenmrsDiagnosticReportHandler {
      * DiagnosticReport chain, whose conclusion/presentedForm/result
      * fields never persisted in OpenMRS anyway.
      *
-     * @return the new Observation's UUID, or null if creation failed
+     * <p>Posted as UTF-8 through {@link #createObs}, like the SR report: the
+     * Camel route used before sent the body in the HTTP component's default
+     * charset, which turns the accents of the French text into "?".
+     *
+     * @return the new Observation's UUID, or null if OpenMRS returned none
      */
     public String saveResult(
             ProducerTemplate producerTemplate,
@@ -81,21 +84,11 @@ public class OpenmrsDiagnosticReportHandler {
                 value.replace("\"", "\\\"").replace("\n", "\\n"),
                 effectiveDate);
 
-        Map<String, Object> headers = new HashMap<>();
-        headers.put(Constants.CAMEL_HTTP_METHOD, Constants.POST);
-        headers.put(Constants.CONTENT_TYPE, Constants.APPLICATION_JSON);
-        headers.put(Constants.AUTHORIZATION, openmrsConfig.authHeader());
-
-        String response = producerTemplate.requestBodyAndHeaders(
-                "direct:openmrs-create-obs-native-route", obsJson, headers, String.class);
-
-        String obsUUID = null;
-        try {
-            Map<?, ?> result = new ObjectMapper().readValue(response, Map.class);
-            obsUUID = (String) result.get("uuid");
+        String obsUUID = createObs(obsJson, patientUUID);
+        if (obsUUID == null) {
+            log.warn("saveResult: OpenMRS returned no Observation UUID for patient {}", patientUUID);
+        } else {
             log.info("saveResult: created Observation {} for patient {}", obsUUID, patientUUID);
-        } catch (Exception e) {
-            log.warn("saveResult: could not parse Observation UUID from response: {}", e.getMessage());
         }
         return obsUUID;
     }
