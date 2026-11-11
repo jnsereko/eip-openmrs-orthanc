@@ -19,7 +19,12 @@ import com.ozonehis.eip.openmrs.orthanc.models.obs.Attachment;
 import com.ozonehis.eip.openmrs.orthanc.models.series.Series;
 import com.ozonehis.eip.openmrs.orthanc.repository.ProcessedStudyRepository;
 import java.io.IOException;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
@@ -47,6 +52,12 @@ public class ImagingStudyProcessor implements Processor {
      */
     static final String STUDY_RECEIVED_TEXT =
             "Étude d'imagerie reçue – ouvrir depuis la carte Imagerie (Pièces jointes).";
+    /**
+     * How long a processed study's attachment check is trusted before OpenMRS is asked again. The
+     * poll runs every 10 seconds over up to 100 studies, so checking every time would add an obs
+     * search per study per poll; an hour still brings an attachment back soon after a restore.
+     */
+    static final Duration ATTACHMENT_RECHECK_INTERVAL = Duration.ofHours(1);
     @Autowired
     private ProcessedStudyRepository processedStudyRepository;
     @Value("${orthanc.publicUrl:${orthanc.baseUrl}}")
@@ -66,6 +77,11 @@ public class ImagingStudyProcessor implements Processor {
     private OpenmrsAttachmentHandler openmrsAttachmentHandler;
     @Autowired
     private OpenmrsObsHandler openmrsObsHandler;
+
+    private Clock clock = Clock.systemUTC();
+
+    /** Processed studies whose attachment was last checked, and when. */
+    private final Map<String, Instant> attachmentCheckedAt = new ConcurrentHashMap<>();
     @Override
     public void process(Exchange exchange) {
         try (ProducerTemplate producerTemplate = exchange.getContext().createProducerTemplate()) {
@@ -90,6 +106,7 @@ public class ImagingStudyProcessor implements Processor {
                 String studyInstanceUID = study.getImagingStudyMainDicomTags().getStudyInstanceUID();
                 if (processedStudyRepository.exists(study.id)) {
                     log.debug("DiagnosticReport already processed for study {}", study.id);
+                    ensureAttachment(producerTemplate, study, patientUUID);
                     continue;
                 }
                 String studyDate = study.getImagingStudyMainDicomTags().getStudyDate();
@@ -111,6 +128,38 @@ public class ImagingStudyProcessor implements Processor {
             }
         } catch (Exception e) {
             throw new EIPException(String.format("Error processing ImagingStudy: %s", e.getMessage()));
+        }
+    }
+    /**
+     * Puts back the preview attachment of a study that is already processed, if OpenMRS no longer
+     * has it.
+     *
+     * <p>{@code eip_processed_orthanc_study} lives in the bridge's own database, so it survives an
+     * OpenMRS data loss or restore that the attachment does not. The study then stayed marked as
+     * done and never came back on the Imagerie card (UVL-EMR#578). Only the attachment is
+     * re-created: the study-received Observation and the tracking row are left as they are, and
+     * nothing else is re-run. The check is repeated at most every
+     * {@link #ATTACHMENT_RECHECK_INTERVAL}; a failed check is not remembered, so it is retried on
+     * the next poll.
+     */
+    private void ensureAttachment(ProducerTemplate producerTemplate, Study study, String patientUUID) {
+        Instant now = clock.instant();
+        Instant checkedAt = attachmentCheckedAt.get(study.id);
+        if (checkedAt != null && checkedAt.plus(ATTACHMENT_RECHECK_INTERVAL).isAfter(now)) {
+            return;
+        }
+        String studyInstanceUID = study.getImagingStudyMainDicomTags().getStudyInstanceUID();
+        try {
+            if (!doesObsExists(producerTemplate, patientUUID, studyInstanceUID)) {
+                log.info(
+                        "Study {} is already processed but patient {} has no attachment for it, re-creating it",
+                        study.id,
+                        patientUUID);
+                createAttachment(producerTemplate, study, patientUUID);
+            }
+            attachmentCheckedAt.put(study.id, now);
+        } catch (Exception e) {
+            log.warn("Could not check the attachment of processed study {}: {}", study.id, e.getMessage());
         }
     }
     /**
@@ -174,11 +223,24 @@ public class ImagingStudyProcessor implements Processor {
         // the study-received Observation above is already saved either way.
         log.warn("No renderable instance found in study {}, no image attached", study.id);
     }
+    /**
+     * The search asks OpenMRS for this patient's attachments, but OpenMRS ignores search parameters
+     * it does not support instead of refusing them, so the patient is checked here as well whenever
+     * the obs carries one.
+     */
     private boolean doesObsExists(ProducerTemplate producerTemplate, String patientUUID, String imagingStudyID)
             throws JsonProcessingException {
         List<Attachment> attachmentList =
                 openmrsObsHandler.getObsByPatientUUIDAndConceptUUID(producerTemplate, patientUUID, attachmentConceptId);
+        if (attachmentList == null) {
+            return false;
+        }
         for (Attachment attachment : attachmentList) {
+            if (attachment.getPerson() != null
+                    && attachment.getPerson().getUuid() != null
+                    && !attachment.getPerson().getUuid().equals(patientUUID)) {
+                continue;
+            }
             if (attachment.getComment() != null && attachment.getComment().contains(imagingStudyID)) {
                 return true;
             }

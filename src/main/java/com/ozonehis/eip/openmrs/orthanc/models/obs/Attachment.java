@@ -27,4 +27,21 @@ public class Attachment {
 
     @JsonProperty("comment")
     public String comment;
+
+    /**
+     * The obs's person, from {@code v=full}. Kept so callers can check the patient themselves
+     * rather than trust that OpenMRS applied the {@code patient} search filter.
+     */
+    @JsonProperty("person")
+    public Person person;
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class Person {
+
+        @JsonProperty("uuid")
+        public String uuid;
+    }
 }

@@ -11,6 +11,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -29,6 +30,9 @@ import com.ozonehis.eip.openmrs.orthanc.models.obs.Attachment;
 import com.ozonehis.eip.openmrs.orthanc.models.series.Series;
 import com.ozonehis.eip.openmrs.orthanc.repository.ProcessedStudyRepository;
 import java.io.IOException;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.Collections;
 import org.apache.camel.Exchange;
 import org.hl7.fhir.r4.model.Identifier;
@@ -191,6 +195,104 @@ class ImagingStudyProcessorTest extends BaseProcessorTest {
         assertFalse(text.getValue().contains("stone-webviewer"));
         // The Observation is still what the SR report and the orphan cleanup find the study by.
         verify(processedStudyRepository).save(ORTHANC_STUDY_ID, PATIENT_ID, RESULT_UUID);
+    }
+
+    @Test
+    void shouldRecreateTheMissingAttachmentOfAnAlreadyProcessedStudy() throws IOException {
+        // After an OpenMRS restore the bridge still has the study in eip_processed_orthanc_study,
+        // but the attachment the Imagerie card lists is gone (UVL-EMR#578).
+        givenAProcessedStudyOfThePatient();
+        when(openmrsObsHandler.getObsByPatientUUIDAndConceptUUID(any(), eq(PATIENT_ID), any()))
+                .thenReturn(Collections.emptyList());
+
+        imagingStudyProcessor.process(createExchange(studies(), "c"));
+
+        verify(openmrsAttachmentHandler, times(1))
+                .saveAttachment(any(), eq(PATIENT_ID), eq(STUDY_ID), eq(ORTHANC_STUDY_ID));
+        // Only the attachment: the study-received note and the tracking row are not written again.
+        verify(openmrsDiagnosticReportHandler, never()).saveResult(any(), any(), any(), any(), any());
+        verify(processedStudyRepository, never()).save(any(), any(), any());
+    }
+
+    @Test
+    void shouldLeaveAnAlreadyProcessedStudyAloneWhenItsAttachmentExists() throws IOException {
+        givenAProcessedStudyOfThePatient();
+        when(openmrsObsHandler.getObsByPatientUUIDAndConceptUUID(any(), eq(PATIENT_ID), any()))
+                .thenReturn(Collections.singletonList(attachmentOf(PATIENT_ID)));
+
+        imagingStudyProcessor.process(createExchange(studies(), "c"));
+
+        verify(openmrsObsHandler, times(1)).getObsByPatientUUIDAndConceptUUID(any(), eq(PATIENT_ID), any());
+        verify(orthancImagingStudyHandler, never()).fetchStudyBinaryData(any());
+        verify(openmrsAttachmentHandler, never()).saveAttachment(any(), any(), any(), any());
+        verify(openmrsDiagnosticReportHandler, never()).saveResult(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void shouldNotCountAnotherPatientsAttachmentWhenOpenmrsIgnoresThePatientFilter() throws IOException {
+        givenAProcessedStudyOfThePatient();
+        when(openmrsObsHandler.getObsByPatientUUIDAndConceptUUID(any(), eq(PATIENT_ID), any()))
+                .thenReturn(Collections.singletonList(attachmentOf("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")));
+
+        imagingStudyProcessor.process(createExchange(studies(), "c"));
+
+        verify(openmrsAttachmentHandler, times(1))
+                .saveAttachment(any(), eq(PATIENT_ID), eq(STUDY_ID), eq(ORTHANC_STUDY_ID));
+    }
+
+    @Test
+    void shouldCheckAProcessedStudyAgainOnlyAfterTheRecheckInterval() throws IOException {
+        givenAProcessedStudyOfThePatient();
+        when(openmrsObsHandler.getObsByPatientUUIDAndConceptUUID(any(), eq(PATIENT_ID), any()))
+                .thenReturn(Collections.singletonList(attachmentOf(PATIENT_ID)));
+        Instant start = Instant.parse("2026-11-11T08:00:00Z");
+        imagingStudyProcessor.setClock(Clock.fixed(start, ZoneOffset.UTC));
+
+        imagingStudyProcessor.process(createExchange(studies(), "c"));
+        imagingStudyProcessor.process(createExchange(studies(), "c"));
+        verify(openmrsObsHandler, times(1)).getObsByPatientUUIDAndConceptUUID(any(), any(), any());
+
+        imagingStudyProcessor.setClock(Clock.fixed(
+                start.plus(ImagingStudyProcessor.ATTACHMENT_RECHECK_INTERVAL).plusSeconds(1), ZoneOffset.UTC));
+        imagingStudyProcessor.process(createExchange(studies(), "c"));
+        verify(openmrsObsHandler, times(2)).getObsByPatientUUIDAndConceptUUID(any(), any(), any());
+    }
+
+    @Test
+    void shouldRetryAFailedAttachmentCheckOnTheNextPoll() throws IOException {
+        givenAProcessedStudyOfThePatient();
+        when(openmrsObsHandler.getObsByPatientUUIDAndConceptUUID(any(), eq(PATIENT_ID), any()))
+                .thenThrow(new RuntimeException("OpenMRS is starting"))
+                .thenReturn(Collections.emptyList());
+
+        imagingStudyProcessor.process(createExchange(studies(), "c"));
+        verify(openmrsAttachmentHandler, never()).saveAttachment(any(), any(), any(), any());
+
+        imagingStudyProcessor.process(createExchange(studies(), "c"));
+        verify(openmrsAttachmentHandler, times(1))
+                .saveAttachment(any(), eq(PATIENT_ID), eq(STUDY_ID), eq(ORTHANC_STUDY_ID));
+    }
+
+    private void givenAProcessedStudyOfThePatient() throws IOException {
+        Patient patient = new Patient();
+        patient.setId(PATIENT_ID);
+        patient.setIdentifier(Collections.singletonList(new Identifier().setValue(PATIENT_IDENTIFIER)));
+        when(openmrsPatientHandler.getPatientByIdentifier(PATIENT_IDENTIFIER)).thenReturn(patient);
+        when(processedStudyRepository.exists(ORTHANC_STUDY_ID)).thenReturn(true);
+        when(orthancImagingStudyHandler.getSeriesByID(any(), any())).thenReturn(getSeries());
+        when(orthancImagingStudyHandler.fetchStudyBinaryData(any())).thenReturn(new byte[] {1});
+    }
+
+    private static Attachment attachmentOf(String personUuid) {
+        Attachment attachment = new Attachment();
+        attachment.setComment("http://localhost:8889/stone-webviewer/index.html?study=" + STUDY_ID + "&orthancId="
+                + ORTHANC_STUDY_ID);
+        attachment.setPerson(new Attachment.Person(personUuid));
+        return attachment;
+    }
+
+    private static String studies() {
+        return new Utils().readJSON("response/orthanc-studies-response.json");
     }
 
     private Series getSeries() throws JsonProcessingException {
