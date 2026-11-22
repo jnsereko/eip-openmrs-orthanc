@@ -8,6 +8,8 @@
 package com.ozonehis.eip.openmrs.orthanc.processors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -21,6 +23,8 @@ import com.ozonehis.eip.openmrs.orthanc.repository.ProcessedRadiologyOrderReposi
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.IntFunction;
@@ -57,6 +61,12 @@ class RadiologyOrderWorklistProcessorTest {
 
     private final List<String> pageQueries = new ArrayList<>();
 
+    /** Raw query of each ServiceRequest search that reached the server. */
+    private final List<String> searchQueries = new ArrayList<>();
+
+    /** When set, the ServiceRequest search answers with this HTTP status and no body. */
+    private int searchStatus = 200;
+
     /** Serves page n (1-based) of the ServiceRequest search when set; null serves the single page. */
     private IntFunction<String> pages;
 
@@ -77,8 +87,15 @@ class RadiologyOrderWorklistProcessorTest {
     @BeforeEach
     void setup() throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/openmrs/ws/fhir2/R4/ServiceRequest", exchange -> respond(exchange,
-                pages != null ? pages.apply(1) : serviceRequestBundle(srConcept, srText)));
+        server.createContext("/openmrs/ws/fhir2/R4/ServiceRequest", exchange -> {
+            searchQueries.add(exchange.getRequestURI().getRawQuery());
+            if (searchStatus != 200) {
+                exchange.sendResponseHeaders(searchStatus, -1);
+                exchange.close();
+                return;
+            }
+            respond(exchange, pages != null ? pages.apply(1) : serviceRequestBundle(srConcept, srText));
+        });
         // Where a next link leads once rebased: /ws/fhir2/R4?_getpages=...&_getpagesoffset=<n*100>
         server.createContext("/openmrs/ws/fhir2/R4", exchange -> {
             String query = exchange.getRequestURI().getRawQuery();
@@ -135,6 +152,7 @@ class RadiologyOrderWorklistProcessorTest {
 
     @Test
     void shouldFollowNextLinksToAPaidXrayBeyondTheFirstPage() throws Exception {
+        useOneSearch();
         // UVL-EMR#424: a full first page of lab orders, the paid X-ray on page three. Only the first
         // page was read, so the X-ray waited until the orders before it left the seven-day window.
         pages = page -> page < 3
@@ -155,6 +173,7 @@ class RadiologyOrderWorklistProcessorTest {
 
     @Test
     void shouldStopWhenANextLinkRepeatsAPageAlreadyRead() throws Exception {
+        useOneSearch();
         // Page 2 links back to itself: read once, then stop - and its X-ray is still scheduled.
         pages = page -> page == 1
                 ? labPage(page, FOREIGN_BASE + "?_getpages=abc&_getpagesoffset=100&_count=100")
@@ -171,6 +190,7 @@ class RadiologyOrderWorklistProcessorTest {
 
     @Test
     void shouldStopFollowingNextLinksAfterTheMaximumPageCount() throws Exception {
+        useOneSearch();
         // A server that never stops offering a next page: the poll reads MAX_PAGES and returns.
         pages = page -> labPage(page, FOREIGN_BASE + "?_getpages=abc&_getpagesoffset=" + page * 100 + "&_count=100");
 
@@ -182,8 +202,10 @@ class RadiologyOrderWorklistProcessorTest {
     }
 
     @Test
-    void shouldKeepThePagesAlreadyReadWhenALaterPageFails() throws Exception {
-        // The X-ray is on page 1; page 2 is a 404. The X-ray must still be scheduled.
+    void shouldTreatAFailedLaterPageAsAFailedSearchNotAsFewerOrders() throws Exception {
+        // The X-ray is on page 1; page 2 is a 404. The search failed: nothing is examined, so no
+        // order is judged against a partial answer, and the poll ends without an exception.
+        useOneSearch();
         pages = page -> bundleOf(new String[] {serviceRequest(SERVICE_REQUEST_ID, RX01, "Chest X-ray")},
                 "http://127.0.0.1:1/openmrs/ws/fhir2/R4/Nowhere?_getpages=gone");
         server.createContext("/openmrs/ws/fhir2/R4/Nowhere", exchange -> {
@@ -194,8 +216,66 @@ class RadiologyOrderWorklistProcessorTest {
 
         processor.process(null);
 
+        assertEquals(List.of(), taskQueries);
+        verify(orthancWorklistHandler, never())
+                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void shouldTreatAFailedSearchAsAFailureNotAsNoOrders() throws Exception {
+        searchStatus = 500;
+
+        RadiologyOrderWorklistProcessor.OrderSearchException failure = assertThrows(
+                RadiologyOrderWorklistProcessor.OrderSearchException.class,
+                () -> processor.searchRadiologyOrders("2026-11-15T00:00:00Z"));
+        assertEquals("IOException: HTTP 500", failure.getMessage());
+
+        // and the poll itself neither throws nor schedules anything
+        processor.process(null);
+        verify(orthancWorklistHandler, never())
+                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void shouldAskOnlyForImagingOrdersInTheSevenDayWindow() throws Exception {
+        taskBundle = bundleOf(acceptedTask("t-mine", SERVICE_REQUEST_ID));
+
+        processor.process(null);
+
+        // 39 default uuids: two searches of at most 20, together every radiology concept once
+        assertEquals(2, searchQueries.size());
+        List<String> asked = new ArrayList<>();
+        for (String query : searchQueries) {
+            assertTrue(query.matches("code=[0-9a-f,-]+&_lastUpdated=gt\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ&_count=100"),
+                    query);
+            String[] codes = query.substring("code=".length(), query.indexOf('&')).split(",");
+            assertTrue(codes.length <= RadiologyOrderWorklistProcessor.CODES_PER_SEARCH);
+            asked.addAll(List.of(codes));
+            String since = query.replaceAll(".*_lastUpdated=gt([^&]+)&.*", "$1");
+            Instant sevenDaysAgo = Instant.now().minus(7, ChronoUnit.DAYS);
+            assertTrue(Math.abs(Instant.parse(since).until(sevenDaysAgo, ChronoUnit.SECONDS)) < 60, since);
+        }
+        assertEquals(new java.util.HashSet<>(RadiologyConcepts.DEFAULT_UUIDS), new java.util.HashSet<>(asked));
+        assertEquals(RadiologyConcepts.DEFAULT_UUIDS.size(), asked.size());
+        // the same order answered by both searches is scheduled once
         verify(orthancWorklistHandler, times(1))
                 .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), eq("DX"));
+    }
+
+    @Test
+    void shouldGiveTheHttpClientAnExplicitReadTimeout() {
+        okhttp3.OkHttpClient client = (okhttp3.OkHttpClient) ReflectionTestUtils.getField(processor, "httpClient");
+        assertEquals(120_000, client.readTimeoutMillis());
+
+        processor.setReadTimeoutSeconds(30);
+
+        client = (okhttp3.OkHttpClient) ReflectionTestUtils.getField(processor, "httpClient");
+        assertEquals(30_000, client.readTimeoutMillis());
+    }
+
+    /** One search only (the uuid list fits in one), so page requests are not repeated per search. */
+    private void useOneSearch() {
+        ReflectionTestUtils.setField(processor, "radiologyConcepts", new RadiologyConcepts(RX01));
     }
 
     @Test
