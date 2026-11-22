@@ -28,8 +28,11 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Component
@@ -52,7 +55,12 @@ public class RadiologyOrderWorklistProcessor implements Processor {
     @Autowired
     private RadiologyConcepts radiologyConcepts;
 
-    private final OkHttpClient httpClient = new OkHttpClient();
+    /** Read timeout of every call to OpenMRS; OkHttp's default is 10 s (UVL-EMR#878). */
+    static final long DEFAULT_READ_TIMEOUT_SECONDS = 120;
+
+    private OkHttpClient httpClient = new OkHttpClient.Builder()
+        .readTimeout(DEFAULT_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .build();
     private final ObjectMapper mapper = new ObjectMapper();
 
     /**
@@ -68,6 +76,12 @@ public class RadiologyOrderWorklistProcessor implements Processor {
      * larger FHIR page per poll; lowering it risks stranding an order that is paid late.
      */
     private static final int LOOKBACK_DAYS = 7;
+
+    /**
+     * Concept uuids per ServiceRequest search, to keep each URL short. 20 uuids is about 800
+     * characters; the same split eip-odoo-openmrs uses.
+     */
+    static final int CODES_PER_SEARCH = 20;
 
     /** ServiceRequests asked for per FHIR page. */
     static final int PAGE_SIZE = 100;
@@ -113,11 +127,15 @@ public class RadiologyOrderWorklistProcessor implements Processor {
             // so once more than 100 lab and procedure orders were updated in the last seven days a
             // new X-ray sat on page two, unseen, until older orders aged out of the window. On UAT
             // two paid RX orders reached the worklist 12 and 16 hours after payment that way.
-            String url = openmrsBaseUrl + "/ws/fhir2/R4/ServiceRequest"
-                + "?_lastUpdated=gt" + since + "&_count=" + PAGE_SIZE;
-
-            List<JsonNode> entries = fetchAllPages(url);
-            if (entries == null) return;
+            //
+            // Only imaging orders are asked for, by code (UVL-EMR#878). The search used to return
+            // every order of the window - 570 on UAT, laboratory included - and discard the
+            // non-radiology ones here, which took 2.4 s and filled the log with "Skipping
+            // non-radiology". FHIR2 honours `code` together with _lastUpdated: on UAT the same
+            // window with the radiology concepts took 0.2 s and returned 6 orders. `status` and
+            // `category` are rejected with HTTP 400, hence the status check below. The concept
+            // check below stays too, so a filter FHIR2 silently dropped costs time, not correctness.
+            List<JsonNode> entries = searchRadiologyOrders(since);
 
             log.debug("Found {} ServiceRequests updated since {}", entries.size(), since);
             int count = 0;
@@ -204,27 +222,57 @@ public class RadiologyOrderWorklistProcessor implements Processor {
             if (count > 0) {
                 log.info("Created {} Orthanc worklist entries from radiology orders", count);
             }
+        } catch (OrderSearchException e) {
+            // One line, no stack trace, and not "no orders": the poll is retried on its schedule.
+            log.warn("Radiology order search failed, no order examined this poll: {}", e.getMessage());
         } catch (Exception e) {
             log.error("Error polling radiology orders: {}", e.getMessage());
         }
     }
 
+    /** A ServiceRequest search that could not be read to its end; its message names the cause. */
+    static class OrderSearchException extends RuntimeException {
+        OrderSearchException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
+
+    /**
+     * The imaging ServiceRequests changed since {@code since}: one search per {@link
+     * #CODES_PER_SEARCH} concept uuids, each read to its last page, without duplicates (an order
+     * whose concept appears in two searches' lists is impossible, but a page boundary moving between
+     * two reads can repeat an entry).
+     *
+     * @throws OrderSearchException when any page of any search cannot be read: a partial answer
+     *     would hide the orders on the page that failed, and an empty one would read as "no orders".
+     */
+    List<JsonNode> searchRadiologyOrders(String since) {
+        List<String> uuids = new ArrayList<>(radiologyConcepts.getUuids());
+        Map<String, JsonNode> found = new LinkedHashMap<>();
+        for (int from = 0; from < uuids.size(); from += CODES_PER_SEARCH) {
+            String codes = String.join(",", uuids.subList(from, Math.min(from + CODES_PER_SEARCH, uuids.size())));
+            String url = openmrsBaseUrl + "/ws/fhir2/R4/ServiceRequest"
+                + "?code=" + codes + "&_lastUpdated=gt" + since + "&_count=" + PAGE_SIZE;
+            for (JsonNode entry : fetchAllPages(url)) {
+                String id = entry.path("resource").path("id").asText("");
+                found.putIfAbsent(id.isEmpty() ? "#" + found.size() : id, entry);
+            }
+        }
+        return new ArrayList<>(found.values());
+    }
+
     /**
      * Every entry of a FHIR search, following the bundle's {@code link[relation=next]} to the end.
      *
-     * <p>Returns null only when the FIRST page cannot be read, so the caller can tell "OpenMRS is
-     * unreachable" from "nothing changed". A later page that fails, a next link that repeats one
-     * already read, or more than {@link #MAX_PAGES} pages each stop the walk with a WARN and keep
-     * what was read: an order on an unread page is only delayed to a later poll, the same as
-     * before paging existed, whereas dropping the pages already read would delay all of them.
+     * <p>A page that cannot be read - first or later - throws {@link OrderSearchException}: a failed
+     * search is not an empty answer (UVL-EMR#878). A next link that repeats one already read, or
+     * more than {@link #MAX_PAGES} pages, stop the walk with a WARN and keep what was read: those
+     * are guards against a looping server, not failures.
      *
      * <p>Each next link is rebased onto {@code openmrsBaseUrl} by {@link #rebaseOnOpenmrs}.
      */
     List<JsonNode> fetchAllPages(String firstPageUrl) {
-        JsonNode bundle = fetchFhir(firstPageUrl);
-        if (bundle == null) {
-            return null;
-        }
+        JsonNode bundle = fetchPage(firstPageUrl);
         List<JsonNode> entries = new ArrayList<>();
         Set<String> visited = new HashSet<>();
         visited.add(firstPageUrl);
@@ -248,11 +296,7 @@ public class RadiologyOrderWorklistProcessor implements Processor {
                     + "orders on the unread pages wait for a later poll", pages, entries.size());
                 break;
             }
-            bundle = fetchFhir(nextUrl);
-            if (bundle == null) {
-                log.warn("Could not read FHIR page {} - using the {} entries read so far", pages + 1, entries.size());
-                break;
-            }
+            bundle = fetchPage(nextUrl);
             pages++;
         }
         if (pages > 1) {
@@ -352,12 +396,49 @@ public class RadiologyOrderWorklistProcessor implements Processor {
         return false;
     }
 
+    /**
+     * One page of a search. The next links point at the server's own host; {@link #rebaseOnOpenmrs}
+     * has already put them on {@code openmrsBaseUrl}, and the same Basic authentication is sent as
+     * for the first request.
+     */
+    private JsonNode fetchPage(String url) {
+        try {
+            Request request = new Request.Builder()
+                .url(url)
+                .header("Authorization", basicAuthorization())
+                .build();
+            try (Response response = httpClient.newCall(request).execute()) {
+                if (!response.isSuccessful()) {
+                    throw new java.io.IOException("HTTP " + response.code());
+                }
+                return mapper.readTree(response.body().string());
+            }
+        } catch (Exception e) {
+            // The URL carries no credentials, only concept uuids and a date.
+            Throwable root = e;
+            while (root.getCause() != null && root.getCause() != root) {
+                root = root.getCause();
+            }
+            throw new OrderSearchException(root.getClass().getSimpleName()
+                + (root.getMessage() == null ? "" : ": " + root.getMessage()), e);
+        }
+    }
+
+    private String basicAuthorization() {
+        return "Basic " + Base64.getEncoder().encodeToString((openmrsUsername + ":" + openmrsPassword).getBytes());
+    }
+
+    /** Applies the configured read timeout; {@value #DEFAULT_READ_TIMEOUT_SECONDS} s unless set. */
+    @Value("${openmrs.fhir.read.timeout.seconds:" + DEFAULT_READ_TIMEOUT_SECONDS + "}")
+    void setReadTimeoutSeconds(long seconds) {
+        httpClient = httpClient.newBuilder().readTimeout(seconds, TimeUnit.SECONDS).build();
+    }
+
     private JsonNode fetchFhir(String url) {
         try {
             Request request = new Request.Builder()
                 .url(url)
-                .header("Authorization", "Basic " + Base64.getEncoder()
-                    .encodeToString((openmrsUsername + ":" + openmrsPassword).getBytes()))
+                .header("Authorization", basicAuthorization())
                 .build();
             try (Response response = httpClient.newCall(request).execute()) {
                 if (!response.isSuccessful()) return null;
