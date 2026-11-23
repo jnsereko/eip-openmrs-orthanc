@@ -84,6 +84,21 @@ public class OrthancWorklistHandler {
     public String createWorklistEntry(String patientId, String patientName,
                                        String accessionNumber, String procedureDesc,
                                        String modality) throws IOException {
+        return createWorklistEntry(patientId, patientName, accessionNumber, procedureDesc, modality,
+            null, null, null);
+    }
+
+    /**
+     * As above, with the patient's and the prescriber's details (UVL-EMR#890). Without
+     * PatientBirthDate, PatientSex and ReferringPhysicianName the modality shows the order day as the
+     * birthday (age 0D), sex O and no physician. Each is already in its DICOM form (DA yyyyMMdd, CS
+     * M/F/O, PN Family^Given, see {@link WorklistFields}); a null or blank one is left out of the
+     * entry rather than sent empty.
+     */
+    public String createWorklistEntry(String patientId, String patientName,
+                                       String accessionNumber, String procedureDesc,
+                                       String modality, String birthDate, String sex,
+                                       String referringPhysician) throws IOException {
         String existingId = findWorklistEntryByAccession(accessionNumber);
         if (existingId != null) {
             log.info("Worklist entry already exists for accession {} ({}), not creating a duplicate",
@@ -100,6 +115,9 @@ public class OrthancWorklistHandler {
         tags.put("AccessionNumber", accessionNumber);
         tags.put("RequestedProcedureDescription", procedureDesc != null ? procedureDesc : "Radiology");
         tags.put("RequestedProcedureID", accessionNumber);
+        putIfPresent(tags, "PatientBirthDate", birthDate);
+        putIfPresent(tags, "PatientSex", sex);
+        putIfPresent(tags, "ReferringPhysicianName", referringPhysician);
 
         ArrayNode stepSequence = mapper.createArrayNode();
         ObjectNode step = mapper.createObjectNode();
@@ -135,6 +153,12 @@ public class OrthancWorklistHandler {
             log.info("Created Orthanc worklist entry {} for patient {} accession {}",
                 id, patientId, accessionNumber);
             return id;
+        }
+    }
+
+    private static void putIfPresent(ObjectNode tags, String name, String value) {
+        if (value != null && !value.trim().isEmpty()) {
+            tags.put(name, value.trim());
         }
     }
 

@@ -11,6 +11,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ozonehis.eip.openmrs.orthanc.RadiologyConcepts;
 import com.ozonehis.eip.openmrs.orthanc.handlers.orthanc.OrthancWorklistHandler;
+import com.ozonehis.eip.openmrs.orthanc.handlers.orthanc.WorklistFields;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -209,9 +210,16 @@ public class RadiologyOrderWorklistProcessor implements Processor {
                     continue;
                 }
 
+                // Birth date, sex and prescriber (UVL-EMR#890): optional, so a value that is missing
+                // or unreadable is left out of the entry and never blocks it.
+                String birthDate = WorklistFields.birthDate(patient.path("birthDate").asText(null));
+                String sex = WorklistFields.sex(patient.path("gender").asText(null));
+                String referringPhysician = referringPhysicianOf(sr);
+
                 try {
                     orthancWorklistHandler.createWorklistEntry(
-                        patientId, dicomName, accessionNumber, procedureDesc, modality);
+                        patientId, dicomName, accessionNumber, procedureDesc, modality,
+                        birthDate, sex, referringPhysician);
                     processedRadiologyOrderRepository.save(srId, accessionNumber);
                     count++;
                 } catch (Exception e) {
@@ -228,6 +236,32 @@ public class RadiologyOrderWorklistProcessor implements Processor {
         } catch (Exception e) {
             log.error("Error polling radiology orders: {}", e.getMessage());
         }
+    }
+
+    /**
+     * The order's prescriber as a DICOM PN, or null. The ServiceRequest's {@code requester} points
+     * at a Practitioner, whose structured name gives {@code Family^Given}; when the Practitioner
+     * cannot be read or has no name, the requester's {@code display} is used as the family
+     * component, and without either the tag is omitted. A failure is one WARN, never an error.
+     */
+    String referringPhysicianOf(JsonNode serviceRequest) {
+        JsonNode requester = serviceRequest.path("requester");
+        String reference = requester.path("reference").asText("");
+        if (reference.startsWith("Practitioner/") && reference.length() > "Practitioner/".length()) {
+            JsonNode practitioner = fetchFhir(openmrsBaseUrl + "/ws/fhir2/R4/" + reference);
+            if (practitioner == null) {
+                log.warn("Could not read {} for the referring physician of ServiceRequest {}, "
+                    + "using the requester's display name if any", reference, serviceRequest.path("id").asText(""));
+            } else {
+                String name = WorklistFields.personName(
+                    practitioner.path("name").path(0).path("family").asText(""),
+                    practitioner.path("name").path(0).path("given").path(0).asText(""));
+                if (name != null) {
+                    return name;
+                }
+            }
+        }
+        return WorklistFields.personName(requester.path("display").asText(""), "");
     }
 
     /** A ServiceRequest search that could not be read to its end; its message names the cause. */
