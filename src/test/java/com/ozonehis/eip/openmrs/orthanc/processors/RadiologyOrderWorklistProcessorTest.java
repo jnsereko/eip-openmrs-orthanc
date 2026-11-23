@@ -10,8 +10,11 @@ package com.ozonehis.eip.openmrs.orthanc.processors;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mockingDetails;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -80,6 +83,14 @@ class RadiologyOrderWorklistProcessorTest {
 
     private String srText = "Chest X-ray";
 
+    /** Extra members of the ServiceRequest JSON (the requester), and of the Patient. */
+    private String srRequester = "";
+
+    private String patientExtras = "";
+
+    /** Practitioner served at /Practitioner/<id>; null answers 500. */
+    private String practitioner;
+
     private OrthancWorklistHandler orthancWorklistHandler;
 
     private RadiologyOrderWorklistProcessor processor;
@@ -94,7 +105,7 @@ class RadiologyOrderWorklistProcessorTest {
                 exchange.close();
                 return;
             }
-            respond(exchange, pages != null ? pages.apply(1) : serviceRequestBundle(srConcept, srText));
+            respond(exchange, pages != null ? pages.apply(1) : bundleOf(new String[] {serviceRequest(SERVICE_REQUEST_ID, srConcept, srText, srRequester)}, null));
         });
         // Where a next link leads once rebased: /ws/fhir2/R4?_getpages=...&_getpagesoffset=<n*100>
         server.createContext("/openmrs/ws/fhir2/R4", exchange -> {
@@ -103,7 +114,22 @@ class RadiologyOrderWorklistProcessorTest {
             int offset = Integer.parseInt(query.replaceAll(".*_getpagesoffset=(\\d+).*", "$1"));
             respond(exchange, pages.apply(offset / RadiologyOrderWorklistProcessor.PAGE_SIZE + 1));
         });
-        server.createContext("/openmrs/ws/fhir2/R4/Patient/", exchange -> respond(exchange, patient()));
+        server.createContext("/openmrs/ws/fhir2/R4/Patient/", exchange -> {
+            if (patientExtras == null) {
+                exchange.sendResponseHeaders(500, -1);
+                exchange.close();
+                return;
+            }
+            respond(exchange, patient(patientExtras));
+        });
+        server.createContext("/openmrs/ws/fhir2/R4/Practitioner/", exchange -> {
+            if (practitioner == null) {
+                exchange.sendResponseHeaders(500, -1);
+                exchange.close();
+                return;
+            }
+            respond(exchange, practitioner);
+        });
         server.createContext("/openmrs/ws/fhir2/R4/Task", exchange -> {
             taskQueries.add(exchange.getRequestURI().getRawQuery());
             respond(exchange, taskBundle);
@@ -135,7 +161,7 @@ class RadiologyOrderWorklistProcessorTest {
 
         assertEquals(List.of("based-on=ServiceRequest/" + SERVICE_REQUEST_ID), taskQueries);
         verify(orthancWorklistHandler)
-                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), eq("DX"));
+                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), eq("DX"), any(), any(), any());
     }
 
     @Test
@@ -147,7 +173,7 @@ class RadiologyOrderWorklistProcessorTest {
         processor.process(null);
 
         verify(orthancWorklistHandler)
-                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), eq("CR"));
+                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), eq("CR"), any(), any(), any());
     }
 
     @Test
@@ -168,7 +194,7 @@ class RadiologyOrderWorklistProcessorTest {
                 "both next links are followed, and rebased onto openmrsBaseUrl rather than the host they name");
         assertEquals(List.of("based-on=ServiceRequest/" + SERVICE_REQUEST_ID), taskQueries);
         verify(orthancWorklistHandler)
-                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), eq("DX"));
+                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), eq("DX"), any(), any(), any());
     }
 
     @Test
@@ -185,7 +211,7 @@ class RadiologyOrderWorklistProcessorTest {
 
         assertEquals(1, pageQueries.size());
         verify(orthancWorklistHandler)
-                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), eq("DX"));
+                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), eq("DX"), any(), any(), any());
     }
 
     @Test
@@ -198,7 +224,7 @@ class RadiologyOrderWorklistProcessorTest {
 
         assertEquals(RadiologyOrderWorklistProcessor.MAX_PAGES - 1, pageQueries.size());
         verify(orthancWorklistHandler, never())
-                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), anyString());
+                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), anyString(), any(), any(), any());
     }
 
     @Test
@@ -218,7 +244,7 @@ class RadiologyOrderWorklistProcessorTest {
 
         assertEquals(List.of(), taskQueries);
         verify(orthancWorklistHandler, never())
-                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), anyString());
+                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), anyString(), any(), any(), any());
     }
 
     @Test
@@ -233,7 +259,7 @@ class RadiologyOrderWorklistProcessorTest {
         // and the poll itself neither throws nor schedules anything
         processor.process(null);
         verify(orthancWorklistHandler, never())
-                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), anyString());
+                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), anyString(), any(), any(), any());
     }
 
     @Test
@@ -259,7 +285,7 @@ class RadiologyOrderWorklistProcessorTest {
         assertEquals(RadiologyConcepts.DEFAULT_UUIDS.size(), asked.size());
         // the same order answered by both searches is scheduled once
         verify(orthancWorklistHandler, times(1))
-                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), eq("DX"));
+                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), eq("DX"), any(), any(), any());
     }
 
     @Test
@@ -297,7 +323,7 @@ class RadiologyOrderWorklistProcessorTest {
         processor.process(null);
 
         verify(orthancWorklistHandler, never())
-                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), anyString());
+                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), anyString(), any(), any(), any());
     }
 
     @Test
@@ -310,7 +336,101 @@ class RadiologyOrderWorklistProcessorTest {
         processor.process(null);
 
         verify(orthancWorklistHandler)
-                .createWorklistEntry(anyString(), anyString(), anyString(), eq("Échographie abdominale"), eq("US"));
+                .createWorklistEntry(anyString(), anyString(), anyString(), eq("Échographie abdominale"), eq("US"), any(), any(), any());
+    }
+
+    // ---- UVL-EMR#890: birth date, sex and prescriber on the worklist entry ----
+
+    private void assertEntry(String name, String birthDate, String sex, String physician) throws Exception {
+        verify(orthancWorklistHandler).createWorklistEntry(
+                eq("UVL-0001"), eq(name), eq("5F0C9B522C8E"), eq("Chest X-ray"), eq("DX"),
+                eq(birthDate), eq(sex), eq(physician));
+    }
+
+    @Test
+    void shouldSendAFullBirthDateTheSexAndThePractitionersName() throws Exception {
+        patientExtras = "\"birthDate\":\"1984-03-07\",\"gender\":\"female\",";
+        srRequester = "\"requester\":{\"reference\":\"Practitioner/p-1\",\"display\":\"Ignored Display\"},";
+        practitioner = "{\"resourceType\":\"Practitioner\",\"name\":[{\"family\":\"Nsengumuremyi\",\"given\":[\"Sebastien\"]}]}";
+        taskBundle = bundleOf(acceptedTask("t-mine", SERVICE_REQUEST_ID));
+
+        processor.process(null);
+
+        // PatientName (Family^Given as before) and the accession are exactly what they were
+        assertEntry("Doe^Jane", "19840307", "F", "Nsengumuremyi^Sebastien");
+    }
+
+    @Test
+    void shouldUseTheFirstDayOfThePeriodForAYearOnlyBirthDate() throws Exception {
+        patientExtras = "\"birthDate\":\"1966\",\"gender\":\"male\",";
+        taskBundle = bundleOf(acceptedTask("t-mine", SERVICE_REQUEST_ID));
+
+        processor.process(null);
+
+        assertEntry("Doe^Jane", "19660101", "M", null);
+    }
+
+    @Test
+    void shouldOmitBirthDateAndSexWhenThePatientHasNone() throws Exception {
+        taskBundle = bundleOf(acceptedTask("t-mine", SERVICE_REQUEST_ID));
+
+        processor.process(null);
+
+        assertEntry("Doe^Jane", null, null, null);
+    }
+
+    @Test
+    void shouldFallBackToTheRequesterDisplayWhenThePractitionerCannotBeRead() throws Exception {
+        srRequester = "\"requester\":{\"reference\":\"Practitioner/p-1\",\"display\":\"Pacifique GAHUNGU\"},";
+        practitioner = null; // HTTP 500
+        taskBundle = bundleOf(acceptedTask("t-mine", SERVICE_REQUEST_ID));
+
+        processor.process(null);
+
+        assertEntry("Doe^Jane", null, null, "Pacifique GAHUNGU");
+    }
+
+    @Test
+    void shouldFallBackToTheRequesterDisplayWhenThePractitionerHasNoName() throws Exception {
+        srRequester = "\"requester\":{\"reference\":\"Practitioner/p-1\",\"display\":\"Pacifique GAHUNGU\"},";
+        practitioner = "{\"resourceType\":\"Practitioner\"}";
+        taskBundle = bundleOf(acceptedTask("t-mine", SERVICE_REQUEST_ID));
+
+        processor.process(null);
+
+        assertEntry("Doe^Jane", null, null, "Pacifique GAHUNGU");
+    }
+
+    @Test
+    void shouldUseTheDisplayAloneWhenTheRequesterHasNoReference() throws Exception {
+        srRequester = "\"requester\":{\"display\":\"Dr Jane Roe\"},";
+        taskBundle = bundleOf(acceptedTask("t-mine", SERVICE_REQUEST_ID));
+
+        processor.process(null);
+
+        assertEntry("Doe^Jane", null, null, "Dr Jane Roe");
+    }
+
+    @Test
+    void shouldOmitThePhysicianWhenTheOrderHasNoRequester() throws Exception {
+        taskBundle = bundleOf(acceptedTask("t-mine", SERVICE_REQUEST_ID));
+
+        processor.process(null);
+
+        assertEntry("Doe^Jane", null, null, null);
+    }
+
+    @Test
+    void shouldNotCreateAnEntryWhenThePatientCannotBeReadAsBefore() throws Exception {
+        // The patient is read for the name and identifier the entry cannot do without; unchanged
+        // by #890, which reuses that same read for the birth date and sex.
+        patientExtras = null; // HTTP 500
+        taskBundle = bundleOf(acceptedTask("t-mine", SERVICE_REQUEST_ID));
+
+        processor.process(null);
+
+        verify(orthancWorklistHandler, never())
+                .createWorklistEntry(anyString(), anyString(), anyString(), anyString(), anyString(), any(), any(), any());
     }
 
     private static void respond(com.sun.net.httpserver.HttpExchange exchange, String json)
@@ -322,14 +442,15 @@ class RadiologyOrderWorklistProcessorTest {
         exchange.close();
     }
 
-    private static String serviceRequestBundle(String concept, String text) {
-        return bundleOf(new String[] {serviceRequest(SERVICE_REQUEST_ID, concept, text)}, null);
+    private static String serviceRequest(String id, String concept, String text) {
+        return serviceRequest(id, concept, text, "");
     }
 
-    private static String serviceRequest(String id, String concept, String text) {
+    private static String serviceRequest(String id, String concept, String text, String requester) {
         return "{\"resourceType\":\"ServiceRequest\",\"id\":\"" + id + "\","
                 + "\"status\":\"active\",\"authoredOn\":\"2026-09-24T08:00:00+00:00\","
                 + "\"code\":{\"text\":\"" + text + "\",\"coding\":[{\"code\":\"" + concept + "\"}]},"
+                + requester
                 + "\"subject\":{\"reference\":\"Patient/" + PATIENT_ID + "\"}}";
     }
 
@@ -343,8 +464,8 @@ class RadiologyOrderWorklistProcessorTest {
         return bundleOf(labOrders, next);
     }
 
-    private static String patient() {
-        return "{\"resourceType\":\"Patient\",\"id\":\"" + PATIENT_ID + "\","
+    private static String patient(String extras) {
+        return "{\"resourceType\":\"Patient\",\"id\":\"" + PATIENT_ID + "\"," + extras
                 + "\"identifier\":[{\"value\":\"UVL-0001\"}],"
                 + "\"name\":[{\"family\":\"Doe\",\"given\":[\"Jane\"]}]}";
     }

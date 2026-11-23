@@ -8,6 +8,7 @@
 package com.ozonehis.eip.openmrs.orthanc.handlers.orthanc;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -93,6 +94,34 @@ class OrthancWorklistHandlerTest {
 
         assertEquals("ORTHANC", posted.path("Tags").path("ScheduledProcedureStepSequence").path(0)
                 .path("ScheduledStationAETitle").asText());
+    }
+
+    @Test
+    void shouldWriteBirthDateSexAndReferringPhysicianAtTheTopLevel() throws Exception {
+        handler.createWorklistEntry("UVL-0001", "Doe^Jane", "5F0C9B522C8E", "RX01 - Chest X-ray", "DX",
+                "19840307", "F", "Nsengumuremyi^Sebastien");
+
+        JsonNode tags = posted.path("Tags");
+        assertEquals("19840307", tags.path("PatientBirthDate").asText());
+        assertEquals("F", tags.path("PatientSex").asText());
+        assertEquals("Nsengumuremyi^Sebastien", tags.path("ReferringPhysicianName").asText());
+        // untouched
+        assertEquals("UVL-0001", tags.path("PatientID").asText());
+        assertEquals("Doe^Jane", tags.path("PatientName").asText());
+        assertEquals("5F0C9B522C8E", tags.path("AccessionNumber").asText());
+        assertEquals("5F0C9B522C8E", tags.path("RequestedProcedureID").asText());
+    }
+
+    @Test
+    void shouldLeaveOutTheOptionalTagsWhenNullOrBlank() throws Exception {
+        handler.createWorklistEntry("UVL-0001", "Doe^Jane", "5F0C9B522C8E", "RX01 - Chest X-ray", "DX",
+                null, " ", null);
+
+        JsonNode tags = posted.path("Tags");
+        assertFalse(tags.has("PatientBirthDate"));
+        assertFalse(tags.has("PatientSex"));
+        assertFalse(tags.has("ReferringPhysicianName"));
+        assertEquals("Doe^Jane", tags.path("PatientName").asText());
     }
 
     @Test
